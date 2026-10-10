@@ -1,0 +1,17 @@
+{
+  "name": "phantom-agent-sdk",
+  "private": true,
+  "description": "The SDK behind phantom-looper: a client for agents and a backend for servers.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build:client": "npm run build -w @phantom-agent-sdk/client",
+    "build:backend": "npm run build -w @phantom-agent-sdk/backend",
+    "build": "npm run build:client && npm run build:backend",
+    "lint:client": "npm run lint -w @phantom-agent-sdk/client",
+    "lint:backend": "npm run lint -w @phantom-agent-sdk/backend",
+    "lint": "npm run lint:client && npm run lint:backend",
+    "test": "npm test -w @phantom-agent-sdk/backend"
+  }
+}
