@@ -11,7 +11,6 @@
 // else. The members are the objects every route, tool and engine reads.
 import { readEnv, APP_VERSION, type Env } from './lib/env.js';
 import { logger, errStr } from './lib/log.js';
-import { makePaths, type Paths } from './lib/paths.js';
 import { Database, SDK_MIGRATIONS } from './storage/Database.js';
 import { Settings } from './storage/Settings.js';
 import { sdkSettings, agentTypeSettings } from './storage/sdkSettings.js';
@@ -34,13 +33,16 @@ import { BoardEvents } from './agents/BoardEvents.js';
 import { SettingsEvents } from './agents/SettingsEvents.js';
 import { ForegroundCommands } from './agents/ForegroundCommands.js';
 import { makeDocker } from './runtime/Docker.js';
-import { LocalHost } from './runtime/LocalHost.js';
 import { Runners } from './host/Runners.js';
 import { Images } from './runtime/Images.js';
 import { SessionContainers } from './runtime/SessionContainers.js';
-import * as checkoutPool from './runtime/CheckoutPool.js';
 import { GitService, type GitHooks } from './git/GitService.js';
-import { idleBackupSweep, pressureSweep } from './runtime/Disk.js';
+import { Maintenance } from './maintenance/Maintenance.js';
+import { restockSpareClones } from './maintenance/restockSpareClones.js';
+import { backupIdleSessions } from './maintenance/backupIdleSessions.js';
+import { removeOldContainers } from './maintenance/removeOldContainers.js';
+import { removeUnusedImages } from './maintenance/removeUnusedImages.js';
+import { freeDiskSpace } from './maintenance/freeDiskSpace.js';
 import { refreshWorkState } from './git/workRefresh.js';
 import { TelegramBotState } from './telegram/botState.js';
 import { TelegramSentMessages } from './telegram/sentMessages.js';
@@ -53,7 +55,7 @@ import { Mailer } from './mail/Mailer.js';
 import { Media } from './media/Media.js';
 import { CronScheduler, CRON_STARTER, type CronAgent } from './crons/CronScheduler.js';
 import { Turns } from './host/Turns.js';
-import { ToolCalls } from './agents/ToolCalls.js';
+import { Steps } from './agents/Steps.js';
 import { Identity, type IdentityOptions } from './identity/Identity.js';
 import { SessionTitler, type TitleWriter } from './agents/SessionTitler.js';
 import { HttpApi } from './api/HttpApi.js';
@@ -142,7 +144,6 @@ export class PhantomBackend {
   readonly env: Env;
   /** This backend's release (`vX.Y.Z`), or 'dev' for a checkout. */
   readonly version = APP_VERSION;
-  readonly paths: Paths;
 
   // ── storage ──────────────────────────────────────────────────────────
   readonly database: Database;
@@ -169,9 +170,8 @@ export class PhantomBackend {
   readonly boardEvents: BoardEvents;
   readonly settingsEvents: SettingsEvents;
   readonly foregroundCommands: ForegroundCommands;
-  /** The server tool calls in flight per session, and the writer of their
-   *  results: the api ran them, so the api records them (agents/ToolCalls.ts). */
-  readonly toolCalls: ToolCalls;
+  /** The one writer of a turn's steps (agents/Steps.ts). */
+  readonly steps: Steps;
   readonly notifications = new Notifications();
   /** Outbound mail (SMTP, the smtp_* settings). */
   readonly mailer: Mailer;
@@ -182,6 +182,8 @@ export class PhantomBackend {
   readonly sessionTitler: SessionTitler;
   /** The backend's git: manual ops, auto-push/pull, instant sync, the archive policy. */
   readonly git: GitService;
+  /** The upkeep jobs on their timers (maintenance/Maintenance.ts). */
+  readonly maintenance: Maintenance;
   readonly #httpApi: HttpApi;
   /** Where a client in this process reaches the API: plain HTTP on
    *  loopback. The backend's own agents are clients like any other. */
@@ -213,17 +215,17 @@ export class PhantomBackend {
   #loops: Promise<void>[] = [];
 
   private constructor(readonly config: PhantomBackendConfig, built: Built) {
-    this.env = built.env; this.paths = built.paths; this.database = built.database; this.settings = built.settings;
+    this.env = built.env; this.database = built.database; this.settings = built.settings;
     this.projects = built.projects; this.workspaces = built.workspaces; this.sessions = built.sessions; this.cards = built.cards;
     this.crons = built.crons; this.presets = built.presets; this.backgroundTasks = built.backgroundTasks; this.tokenLog = built.tokenLog;
     this.agentDatabases = built.agentDatabases; this.agentTypes = built.agentTypes; this.agentConfig = built.agentConfig;
     this.modelCatalog = built.modelCatalog; this.sessionNotes = built.sessionNotes; this.sessionEvents = built.sessionEvents;
     this.boardEvents = built.boardEvents; this.settingsEvents = built.settingsEvents; this.foregroundCommands = built.foregroundCommands;
     this.docker = built.docker; this.images = built.images; this.sessionContainers = built.sessionContainers;
-    this.deployment = new Deployment(built.paths, built.tokenLog, built.docker, built.images, config.deployment);
+    this.deployment = new Deployment(built.tokenLog, built.docker, built.images, config.deployment);
     this.runners = built.runners; this.telegramBotState = built.telegramBotState;
-    this.toolCalls = new ToolCalls(this.sessions, this.sessionEvents);
-    this.turns = new Turns(this.sessions, this.runners, this.settings, this.sessionEvents, this.toolCalls);
+    this.steps = new Steps(this.sessions, this.sessionEvents);
+    this.turns = new Turns(this.sessions, this.runners, this.settings, this.sessionEvents, this.steps);
     this.telegramSentMessages = built.telegramSentMessages; this.telegramHandledUpdates = built.telegramHandledUpdates;
     this.sessionTitler = new SessionTitler(this.sessions, config.writeTitle);
     this.mailer = new Mailer(this.settings);
@@ -239,6 +241,14 @@ export class PhantomBackend {
       sessionEvents: this.sessionEvents, boardEvents: this.boardEvents, settingsEvents: this.settingsEvents,
       sessionNotes: this.sessionNotes, sessionContainers: this.sessionContainers,
     }, config.git ?? {});
+    this.maintenance = new Maintenance(this.settings, [
+      restockSpareClones({ projects: this.projects, settings: this.settings, runners: this.runners }),
+      backupIdleSessions({ projects: this.projects, sessions: this.sessions, gitSync: this.git.sync }),
+      removeOldContainers({ settings: this.settings, workspaces: this.workspaces, projects: this.projects, sessionContainers: this.sessionContainers, busy: (ids) => this.busyWorkspaces(ids) }),
+      removeUnusedImages({ settings: this.settings, runners: this.runners, images: this.images }),
+      freeDiskSpace({ settings: this.settings, projects: this.projects, sessions: this.sessions, runners: this.runners,
+        sessionContainers: this.sessionContainers, gitSync: this.git.sync, busy: (ids) => this.busyWorkspaces(ids) }),
+    ]);
     this.#httpApi = new HttpApi(this, this.env.serviceRoleKey, config.routes);
   }
 
@@ -259,8 +269,6 @@ export class PhantomBackend {
     const database = await Database.open(env.databaseUrl, env.encryptionKey);
     await database.migrate(SDK_MIGRATIONS);
     if (config.migrations) await database.migrate(config.migrations);
-    const paths = makePaths(env.workspaceRoot);
-    await checkoutPool.bootCleanup(paths);
 
     const boardEvents = new BoardEvents();
     const sessionEvents = new SessionEvents();
@@ -293,15 +301,11 @@ export class PhantomBackend {
     const images = new Images(docker);
     // The backend's own host: this process's volume and Docker. Every workspace
     // call goes through a host (runtime/WorkspaceHost.ts); a workspace pinned
-    // to no runner is here. New workspaces land here only with
-    // RUN_SESSION_CONTAINERS=1: the default is 0 — every new workspace goes
-    // to a session runner (install.sh starts one beside the api), and this
-    // box keeps serving, reaping and sweeping only what it already holds.
-    const localHost = new LocalHost(docker, images, paths, {
-      volume: process.env.WORKSPACE_VOLUME, network: process.env.AGENT_NETWORK, databaseContainer: process.env.AGENT_DATABASE_CONTAINER,
-      diskQuota: process.env.DISK_QUOTA_URL || undefined, apiImage: process.env.API_IMAGE,
-    });
-    const runners = new Runners(database.system, localHost, { runsContainers: /^(1|on|true|yes)$/i.test(process.env.RUN_SESSION_CONTAINERS ?? '0'), settings });
+    // to no runner is here — one made before session runners existed. No new
+    // workspace lands here: every one goes to a session runner (the
+    // `session-runner` service beside the api, or any box running runners/).
+    // This box keeps serving, reaping and sweeping only what it already holds.
+    const runners = new Runners(database.system, { settings });
     await runners.load();
     const workspaces = new Workspaces(database.drizzle, runners, settings, sessionEvents);
     const cards = new Cards(database.drizzle, projects, boardEvents, config.cardFields);
@@ -334,11 +338,11 @@ export class PhantomBackend {
       onRemoved: (workspaceId) => backend.git.instantSync.unwatchWorkspace(workspaceId),
     });
 
-    // A disk limit is only accepted where this server can enforce it.
+    // A disk limit is only accepted where a session runner can enforce it.
     settings.requireSupport('container_disk_gb', () => sessionContainers.diskSupport());
 
     const backend: PhantomBackend = new PhantomBackend(config, {
-      media, env, paths, database, settings, projects, workspaces, sessions, cards, crons, presets, backgroundTasks, tokenLog, agentDatabases,
+      media, env, database, settings, projects, workspaces, sessions, cards, crons, presets, backgroundTasks, tokenLog, agentDatabases,
       agentTypes, agentConfig, modelCatalog, sessionNotes, sessionEvents, boardEvents, settingsEvents, foregroundCommands,
       docker, images, sessionContainers, runners, telegramBotState, telegramSentMessages, telegramHandledUpdates,
     });
@@ -354,41 +358,9 @@ export class PhantomBackend {
     return this.sessions.workspacesHeld(ids);
   }
 
-  /** Workspaces with a running container not touched for `idleMs` and not busy — what the idle reaper takes. */
-  async idleContainerWorkspaces(idleMs: number): Promise<string[]> {
-    const active = await this.sessionContainers.activeWorkspaces();
-    const idle = await this.workspaces.listIdle(active, idleMs);
-    const busy = await this.busyWorkspaces(idle);
-    return idle.filter((id) => !busy.has(id));
-  }
-
-  /** Begin the backend's own loops: the maintenance loop (pool stock, the
-   *  idle backup sweep, idle reaping, the disk-pressure sweep) and the
-   *  work-state refresh. */
+  /** Begin the backend's own loops: the work-state refresh (the upkeep
+   *  jobs are the scheduler's, `maintenance`). */
   #startLoops(): void {
-    this.#loops.push(this.#loop(async () => {
-      // The warm checkouts: the facts resolved once here, the tick run on
-      // every box that holds a volume — this server's (awaited) and each
-      // online runner's (a job; a slow clone there never holds this loop,
-      // and the runner drops a tick under a running one). A runner is
-      // stocked only for projects that have had a workspace on it.
-      const pool = await checkoutPool.poolFacts(this.projects, this.settings);
-      if (pool) {
-        if (this.runners.runsContainers) await checkoutPool.tick(pool, this.paths).catch((error) => log.error({ err: errStr(error) }, 'pool tick threw'));
-        for (const runner of this.runners.onlineRunners()) {
-          const served = await this.runners.projectsOn(runner.id).catch(() => new Set<string>());
-          const mine = pool.filter((project) => served.has(project.id));
-          if (mine.length) void runner.poolTick(mine).catch((error) => log.warn({ runner: runner.name, err: errStr(error) }, 'pool tick on runner failed'));
-        }
-      }
-      await idleBackupSweep(this.projects, this.sessions, this.git.sync).catch((error) => log.error({ err: errStr(error) }, 'idle backup sweep threw'));
-      const idleMs = await this.settings.resolve<number>('container_idle_ms').catch(() => 30 * 60_000);
-      await this.sessionContainers.reap(Number(idleMs), (idleMs) => this.idleContainerWorkspaces(idleMs)).catch((error) => log.error({ err: errStr(error) }, 'container reap threw'));
-      await this.media.sweep().catch((error) => log.error({ err: errStr(error) }, 'media sweep threw'));
-      await pressureSweep(this.settings, this.projects, this.sessions, this.runners, this.sessionContainers, this.git.sync, (ids) => this.busyWorkspaces(ids))
-        .catch((error) => log.error({ err: errStr(error) }, 'pressure sweep threw'));
-      return Number(await this.settings.resolve<number>('maintenance_interval_ms').catch(() => 60_000));
-    }));
     // Database console lifecycle: stop CloudBeaver if the setting is off,
     // start it when toggled on. The boot reconciliation catches the container
     // compose started; the settings listener handles ongoing changes.
@@ -419,16 +391,10 @@ export class PhantomBackend {
    *  they start — then the git service and the loops begin, then
    *  `config.onStart` (user space's engines). */
   async start(): Promise<void> {
-    // A disk limit already set (or fixed) that this server cannot enforce:
-    // stop here, by name — every agent would otherwise fail to start.
-    if (await this.settings.resolve('container_disk_gb')) {
-      const reason = await this.settings.unsupported('container_disk_gb');
-      if (reason) throw new Error(`container_disk_gb is set but cannot be enforced on this server: ${reason}`);
-    }
     await this.#httpApi.listen(this.env.port);
-    await this.runners.local.retireOldContainers().catch((error) => log.warn({ err: errStr(error) }, 'could not retire old-named containers'));
     this.git.start();
     this.#startLoops();
+    this.maintenance.start();
     if (this.config.crons) { this.#cronScheduler = new CronScheduler(this, this.config.crons.agent); this.#cronScheduler.start(); }
     await this.config.onStart?.(this);
     log.info({ port: this.env.port, version: this.version }, 'backend up');
@@ -445,15 +411,15 @@ export class PhantomBackend {
     await this.config.onStop?.(this);
     await this.git.stop();
     await this.#httpApi.close();
+    this.maintenance.stop();
     this.runners.stop();
-    this.runners.local.stop();
     await this.database.close();
   }
 }
 
 interface Built {
   media: Media;
-  env: Env; paths: Paths; database: Database; settings: Settings; projects: Projects; workspaces: Workspaces; sessions: Sessions;
+  env: Env; database: Database; settings: Settings; projects: Projects; workspaces: Workspaces; sessions: Sessions;
   cards: Cards; crons: Crons; presets: Presets; backgroundTasks: BackgroundTasks; tokenLog: TokenLog; agentDatabases: AgentDatabases;
   agentTypes: AgentTypes; agentConfig: AgentConfig; modelCatalog: ModelCatalog; sessionNotes: SessionNotes;
   sessionEvents: SessionEvents; boardEvents: BoardEvents; settingsEvents: SettingsEvents; foregroundCommands: ForegroundCommands;

@@ -1,10 +1,7 @@
 // LocalHost — the workspace primitives, run HERE: this process's volume and
-// this process's Docker daemon. It is the backend's own runner on every server
-// (the backend holds one and routes to it when a workspace is placed
-// nowhere else), and it is the body of a session runner process
-// (host/Runner.ts), which runs this same class against its own volume
-// and Docker and answers the backend's jobs with it. One implementation of
-// every primitive; where it runs is the only difference.
+// this process's Docker daemon. It is the body of a session runner process
+// (host/Runner.ts), which runs it against its own volume and Docker and
+// answers the backend's jobs with it.
 //
 // Nothing here decides anything: which image, which limits, what a sync
 // does — all of that arrives in the call (runtime/WorkspaceHost.ts).
@@ -12,7 +9,7 @@ import type Docker from 'dockerode';
 import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
-import type { ContainerPlan, ContainerState, DetachEvent, FileType, FileStat, Repo, WorkspaceFiles, WorkspaceHost } from './WorkspaceHost.js';
+import type { ActiveContainer, ContainerPlan, ContainerState, DetachEvent, FileType, FileStat, Repo, WorkspaceFiles, WorkspaceHost } from './WorkspaceHost.js';
 import { Sandbox, DockerExec } from './Sandbox.js';
 import { buildContainerSpec } from './SessionContainers.js';
 import type { Images } from './Images.js';
@@ -33,10 +30,6 @@ const log = logger('host');
  *  takes only names whose suffix is an id. */
 export const NAME_PREFIX = 'phantom-backend-session-';
 const isId = (suffix: string) => /^[0-9a-z]{26}$/i.test(suffix);
-/** The names before this one. A container still carrying one is removed at
- *  boot (retireOldContainers): stateless, it comes back under the new name on
- *  the next tool call. Drop these once no install can be on a release before. */
-const OLD_NAME_PREFIXES = ['phantom-looper-ws-', 'phantom-backend-workspace-'];
 export const containerName = (workspaceId: string): string => `${NAME_PREFIX}${workspaceId}`;
 
 export interface LocalHostOptions {
@@ -144,20 +137,6 @@ export class LocalHost implements WorkspaceHost {
 
   /** End the watcher child. */
   stop(): void { this.watcher.stop(); }
-
-  /** Containers still named by the old prefix, removed. They hold nothing —
-   *  the checkout is on the volume — so this costs one container start on
-   *  the next tool call and nothing else. */
-  async retireOldContainers(): Promise<void> {
-    const list = await this.docker.listContainers({ all: true }).catch(() => []);
-    for (const container of list) {
-      const name = (container.Names ?? [])[0]?.replace(/^\//, '') ?? '';
-      if (!OLD_NAME_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
-      await this.docker.getContainer(container.Id).remove({ force: true, v: true })
-        .then(() => log.info({ container: name }, 'old-named workspace container removed — it comes back under the new name'))
-        .catch((error) => log.warn({ container: name, err: errStr(error) }, 'old-named workspace container could not be removed'));
-    }
-  }
 
   // ── the checkout ──────────────────────────────────────────────────────
 
@@ -272,17 +251,18 @@ export class LocalHost implements WorkspaceHost {
     return info.State.Running ? 'running' : 'stopped';
   }
 
-  /** Workspace ids that have a running container, read from Docker off the
-   *  container names. (Docker's name filter is a substring match, so the
-   *  prefix is checked again here.) */
-  async activeWorkspaces(): Promise<string[]> {
+  /** The running session containers, read from Docker off the container
+   *  names, each with the image it was created from. (Docker's name filter
+   *  is a substring match, so the prefix is checked again here.) */
+  async activeWorkspaces(): Promise<ActiveContainer[]> {
     const list = await this.docker.listContainers({ filters: { name: [NAME_PREFIX], status: ['running'] } })
       .catch((error) => { log.warn({ err: errStr(error) }, 'could not list containers'); return []; });
     return list.flatMap((container) => (container.Names ?? [])
       .map((name) => name.replace(/^\//, ''))
       .filter((name) => name.startsWith(NAME_PREFIX))
       .map((name) => name.slice(NAME_PREFIX.length))
-      .filter(isId));
+      .filter(isId)
+      .map((workspaceId) => ({ workspaceId, image: container.Image })));
   }
 
   sandbox(workspaceId: string): Sandbox {
@@ -351,7 +331,7 @@ export class LocalHost implements WorkspaceHost {
    *  for both. `bavail` (what an unprivileged user may still use) is the
    *  honest measure of "full". */
   poolTick(projects: PoolProject[]): Promise<void> { return poolTick(projects, this.paths); }
-  removeOldImages(keep: string[]): Promise<void> { return this.images.removeOlderThan(keep); }
+  removeOldImages(keep: string[]): Promise<number> { return this.images.removeOlderThan(keep); }
 
   async disk(): Promise<{ usedPct: number; freeGB: number }> {
     const stat = await fs.statfs(this.paths.root);

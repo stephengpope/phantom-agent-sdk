@@ -10,6 +10,7 @@ import path from 'node:path';
 import type { Entity } from './entities.js';
 import { toTelegram, splitFormatted } from './entities.js';
 import { connectFetch } from './connect.js';
+import type { SendType } from './mediaTags.js';
 
 /** Telegram's ceiling for anything a bot uploads. Checked before the read, so
  *  an oversize send is reported as itself, not as a generic API failure. */
@@ -24,16 +25,14 @@ export const MAX_OUTBOUND_BYTES = 50 * 1024 * 1024;
  *  separate arguments so the blank line under a header is structural, never
  *  remembered. NOT for the agent's streamed replies (those have no header)
  *  and NOT for a heading that spans two lines of its own (the approval
- *  bubble's kind + subject is ONE heading — its message already follows a
+ *  bubble's label + subject is ONE heading — its message already follows a
  *  blank line). */
 export function titled(title: string, body: string): string {
   return `${title}\n\n${body}`;
 }
 
 /** Which Telegram method a file goes out through. */
-export type SendKind = 'photo' | 'video' | 'voice' | 'audio' | 'document';
-
-const KIND_METHOD: Record<SendKind, { method: string; field: string }> = {
+const SEND_METHOD: Record<SendType, { method: string; field: string }> = {
   photo: { method: 'sendPhoto', field: 'photo' },
   video: { method: 'sendVideo', field: 'video' },
   voice: { method: 'sendVoice', field: 'voice' },
@@ -41,9 +40,9 @@ const KIND_METHOD: Record<SendKind, { method: string; field: string }> = {
   document: { method: 'sendDocument', field: 'document' },
 };
 
-// What the webhook subscribes to. Telegram sends ONLY the listed kinds and
+// What the webhook subscribes to. Telegram sends ONLY the listed update types and
 // keeps the list until the next setWebhook — the boot reconcile re-registers
-// when a kind is missing. `message_reaction` is the speak-it-back gesture;
+// when a type is missing. `message_reaction` is the speak-it-back gesture;
 // `callback_query` is a tap on an approval bubble's button (approvals.ts).
 export const ALLOWED_UPDATES = ['message', 'message_reaction', 'callback_query'];
 
@@ -73,7 +72,14 @@ export class TelegramApi {
     private token: string,
     private onSent?: (messageId: number, text: string) => void,
     private onDeleted?: (messageId: number) => void,
+    private readonly opts: { timeoutMs?: number; uploadTimeoutMs?: number } = {},
   ) {}
+
+  /** A call that gets no answer in this long is on a dead socket: it fails,
+   *  and whatever chained behind it (a bubble's edits) moves on. Uploads get
+   *  longer — a voice note or a file is bytes on the wire. */
+  static readonly TIMEOUT_MS = 30_000;
+  static readonly UPLOAD_TIMEOUT_MS = 120_000;
 
   async call(method: string, body: Record<string, unknown> = {}): Promise<any> {
     const url = `${TELEGRAM_API_BASE}/bot${this.token}/${method}`;
@@ -82,6 +88,7 @@ export class TelegramApi {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.opts.timeoutMs ?? TelegramApi.TIMEOUT_MS),
       });
       const json = await readEnvelope(res);
       if (res.ok && json.ok) return json.result;
@@ -206,9 +213,9 @@ export class TelegramApi {
     return Buffer.from(await res.arrayBuffer());
   }
 
-  private async uploadBytes(kind: SendKind, chatId: number, data: Buffer, name: string,
+  private async uploadBytes(type: SendType, chatId: number, data: Buffer, name: string,
     caption?: string, opts: { replyToMessageId?: number } = {}): Promise<any> {
-    const { method, field } = KIND_METHOD[kind];
+    const { method, field } = SEND_METHOD[type];
     if (data.length > MAX_OUTBOUND_BYTES) {
       throw new Error(`the file is ${Math.round(data.length / 1024 / 1024)} MB, over Telegram's 50 MB limit for bots.`);
     }
@@ -221,7 +228,8 @@ export class TelegramApi {
       form.set('reply_parameters',
         JSON.stringify({ message_id: opts.replyToMessageId, allow_sending_without_reply: true }));
     }
-    const res = await fetch(`${TELEGRAM_API_BASE}/bot${this.token}/${method}`, { method: 'POST', body: form });
+    const res = await fetch(`${TELEGRAM_API_BASE}/bot${this.token}/${method}`, { method: 'POST', body: form,
+      signal: AbortSignal.timeout(this.opts.uploadTimeoutMs ?? TelegramApi.UPLOAD_TIMEOUT_MS) });
     const json = await readEnvelope(res);
     if (!(res.ok && json.ok)) throw new Error(`telegram ${method} failed: ${json.description || res.status}`);
     return json.result;
@@ -239,13 +247,13 @@ export class TelegramApi {
    * (tall screenshots) even when the file is valid, and arriving as a file
    * beats not arriving.
    */
-  async sendFile(kind: SendKind, chatId: number, filePath: string, caption?: string): Promise<any> {
-    return this.sendBytes(kind, chatId, await fs.readFile(filePath), path.basename(filePath), caption);
+  async sendFile(type: SendType, chatId: number, filePath: string, caption?: string): Promise<any> {
+    return this.sendBytes(type, chatId, await fs.readFile(filePath), path.basename(filePath), caption);
   }
 
   /** The same, from memory — a file read off a workspace's host. */
-  async sendBytes(kind: SendKind, chatId: number, data: Buffer, name: string, caption?: string): Promise<any> {
-    if (kind !== 'photo') return this.uploadBytes(kind, chatId, data, name, caption);
+  async sendBytes(type: SendType, chatId: number, data: Buffer, name: string, caption?: string): Promise<any> {
+    if (type !== 'photo') return this.uploadBytes(type, chatId, data, name, caption);
     try {
       return await this.uploadBytes('photo', chatId, data, name, caption);
     } catch {

@@ -8,19 +8,19 @@
 // This object DECIDES: which image, which limits, which credentials, which
 // database — read from the settings in the project's scope — and hands the
 // whole plan to the host the workspace is placed on (runtime/WorkspaceHost.ts),
-// which creates and starts the container. The backend's own runner is this process;
-// a session runner is a box of its own. The docker calls live there.
+// which creates and starts the container: a session runner, a box of its
+// own. The docker calls live there.
 //
 // No in-memory tracking: idle time comes from the workspace's lastUsedAt
 // (moved by every tool call and turn save on any of its sessions); running-
 // task status comes from background_tasks. Both survive a process restart, so
-// containers are never wiped at boot — they stay up and the normal idle reaper
-// handles them.
+// containers are never wiped at boot — they stay up and remove_old_containers
+// (maintenance/) handles them.
 import type { ProjectRow } from '../storage/schema.js';
 import type { Settings } from '../storage/Settings.js';
 import type { AgentDatabases } from '../storage/AgentDatabases.js';
 import * as checkoutPool from './CheckoutPool.js';
-import type { ContainerPlan, ContainerState, WorkspaceHost } from './WorkspaceHost.js';
+import type { ActiveContainer, ContainerPlan, ContainerState, WorkspaceHost } from './WorkspaceHost.js';
 import type { Runners } from '../host/Runners.js';
 import { containerName } from './LocalHost.js';
 import { logger, errStr } from '../lib/log.js';
@@ -73,7 +73,7 @@ export function buildContainerSpec(i: SpecInput): Record<string, unknown> {
     // restart stops every container, and Docker restarts only the ones that
     // carry this. Without it the container sits Exited and ensure() throws it
     // away — everything the agent installed and its own docker images with it.
-    // The reaper removes (never stops), so it never fights this. Verified live:
+    // Removal is a remove (never a stop), so it never fights this. Verified live:
     // after a daemon restart the container is Up with its writable layer intact.
     RestartPolicy: { Name: 'unless-stopped' },
     // null (the default) => omit the field entirely, so Docker applies no cap.
@@ -121,7 +121,7 @@ export interface ContainerOpts {
    *  so whatever the caller does next (a file write) happens after the
    *  listener is in place. Instant sync attaches its watcher here. */
   onStarted?: (workspaceId: string, project: ProjectRow | undefined) => Promise<void>;
-  /** The workspace's container was removed (idle reap, an explicit remove). */
+  /** The workspace's container was removed (remove_old_containers, an explicit remove). */
   onRemoved?: (workspaceId: string) => Promise<void>;
 }
 
@@ -133,8 +133,11 @@ export class SessionContainers {
 
   name(workspaceId: string): string { return containerName(workspaceId); }
 
+  /** The running session containers on every host, each with its image. */
+  activeContainers(): Promise<ActiveContainer[]> { return this.hosts.activeContainers(); }
+
   /** Workspace ids that have a running container, on every host. */
-  activeWorkspaces(): Promise<string[]> { return this.hosts.activeWorkspaces(); }
+  async activeWorkspaces(): Promise<string[]> { return (await this.activeContainers()).map((container) => container.workspaceId); }
 
   /** The workspace's container, probed on its host — never created. */
   async state(workspaceId: string): Promise<ContainerState> {
@@ -223,8 +226,8 @@ export class SessionContainers {
     return { env: [`AGENT_DATABASE_URL=${url}`], host: new URL(url).hostname };
   }
 
-  /** Null when the backend's own runner can hold a container to `container_disk_gb`. */
-  diskSupport(): Promise<string | null> { return this.hosts.local.diskSupport(); }
+  /** Null when an online session runner can hold a container to `container_disk_gb`. */
+  async diskSupport(): Promise<string | null> { return this.hosts.diskSupport(); }
 
   /** Remove the workspace's container on its host. None there is fine — that
    *  is the goal; any other failure throws, so no caller logs a removal that
@@ -233,19 +236,5 @@ export class SessionContainers {
     await (await this.hosts.of(workspaceId)).containerRemove(workspaceId);
     await this.opts.onRemoved?.(workspaceId)
       .catch((error) => log.warn({ workspace: workspaceId, err: errStr(error) }, 'onRemoved listener failed'));
-  }
-
-  /** Kill idle containers. `idleWorkspaces` answers from the workspace's lastUsedAt,
-   *  background_tasks and session locks — no in-memory state. */
-  async reap(idleMs: number, idleWorkspaces: (idleMs: number) => Promise<string[]>): Promise<void> {
-    const stale = await idleWorkspaces(idleMs);
-    for (const workspaceId of stale) {
-      try {
-        await this.remove(workspaceId);
-        log.info({ workspace: workspaceId }, 'idle workspace container removed');
-      } catch (error) {
-        log.warn({ workspace: workspaceId, err: errStr(error) }, 'idle workspace container could not be removed');
-      }
-    }
   }
 }

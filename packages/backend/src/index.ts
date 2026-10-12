@@ -44,6 +44,7 @@ export type { SettingsChanged } from './agents/SettingsEvents.js';
 export { hasEmbeddedCredentials, parseGitHubUrl, parseRepoRef, remoteUrl } from './git/remote.js';
 export type { CardRow, CronRow, ProjectRow, WorkspaceRow, SessionRow, UserRow, OrganizationRow, MemberRow, InvitationRow, ApiKeyRow, MediaRow } from './storage/schema.js';
 export * as checkoutPool from './runtime/CheckoutPool.js';
+export { Maintenance, MaintenanceError, type MaintenanceJob, type MaintenanceRun, type MaintenanceView } from './maintenance/Maintenance.js';
 
 // runtime, git, prompt, skills, tools — the moved modules' companions
 export { makeDocker } from './runtime/Docker.js';
@@ -79,13 +80,12 @@ export { fill, firstLineOf } from '@phantom-agent-sdk/client';
 export { SKILLS_LIST, SECRETS_LIST, GITHUB_TOKEN, AGENT_DATABASE, AGENT_DATABASE_SHARED, MEDIA, DISK_LIMIT, TIME_DATE } from './prompt/serverBlocks.js';
 
 // telegram plumbing, notifications, the queue
-export { TelegramApi, titled, ALLOWED_UPDATES, MAX_OUTBOUND_BYTES, type SendKind } from './telegram/TelegramApi.js';
-export { collectFiles, type TelegramBotDeps, type TelegramCommand, type WebhookStatus, type MessageHandler, type ReactionHandler, type ButtonHandler, type ReplyBubble } from './telegram/TelegramBot.js';
+export { TelegramApi, titled, ALLOWED_UPDATES, MAX_OUTBOUND_BYTES } from './telegram/TelegramApi.js';
+export { collectFiles, type TelegramBotDeps, type TelegramCommand, type WebhookStatus, type MessageHandler, type ReactionHandler, type ButtonHandler } from './telegram/TelegramBot.js';
 export { toTelegram, splitFormatted, truncateFormatted, clampEntities, type Formatted, type Entity as TelegramEntity } from './telegram/entities.js';
-export { collectDeliverables, extractMedia, extractBarePaths, maskJsonStringMedia, maskProtectedSpans, validateDeliveryPath, deliveryKind, MEDIA_DELIVERY_EXTS, type Deliverable, type Media } from './telegram/mediaTags.js';
-export { makeTelegramSink, type TelegramSink, type DeliverConfig } from './telegram/sink.js';
-export { startWaitingBubble, type WaitingBubble } from './telegram/bubble.js';
-export { writeAttachment, composeMessage, classify, safeName, sniffImageMime, MAX_INBOUND_BYTES, type StoredAttachment, type MediaKind } from './telegram/TelegramAttachments.js';
+export { collectDeliverables, extractMedia, extractBarePaths, maskJsonStringMedia, maskProtectedSpans, validateDeliveryPath, deliveryType, MEDIA_DELIVERY_EXTS, type Deliverable, type Media, type SendType } from './telegram/mediaTags.js';
+export { ReplyBubble, type ReplyBubbleOptions, type Delivery } from './telegram/ReplyBubble.js';
+export { writeAttachment, composeMessage, classify, safeName, sniffImageMime, MAX_INBOUND_BYTES, type StoredAttachment, type AttachmentType } from './telegram/TelegramAttachments.js';
 export { transcribeVoice, speakVoice, splitForSpeech, SPEAK_MAX_CHARS, type Transcription } from './telegram/TelegramVoice.js';
 export { connectFetch, isConnectFailure, CONNECT_RETRIES, CONNECT_TIMEOUT_MS, KEEP_ALIVE_MS } from './telegram/connect.js';
 export { askText, answeredText, parseAnswer, type Ask, type ApprovalClient } from './telegram/TelegramApprovals.js';

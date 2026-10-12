@@ -1,13 +1,12 @@
 // Runners — the hosts a workspace can be placed on, and where each
-// workspace is. The backend's own runner (this process, LocalHost) and every
-// registered session runner (a RemoteHost each, online or not). Three jobs:
+// workspace is: every registered session runner (a RemoteHost each, online
+// or not). The api box itself holds no workspace. Three jobs:
 //
 //   PLACEMENT  once, when a workspace is made: the user's own online host if
-//              they have one, else a shared runner, else the backend itself.
-//              Within a tier: fewest workspaces pinned, then most recently
-//              connected. Written to the workspace row; pinned from then on.
+//              they have one, else a shared runner. Within a tier: the
+//              least loaded. Written to the workspace row; pinned from then on.
 //   ROUTING    `of(workspaceId)`: the host a workspace is on. The row's
-//              runner_id, cached here; null is the backend's own runner.
+//              runner_id, cached here; a row that names none is on no host.
 //   THE LINK   a host's hello (its row), its feed (jobs down), its relay
 //              (events up) — the routes call in here.
 //
@@ -18,12 +17,10 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Drizzle } from '../storage/Database.js';
 import { runners, workspaces, type ProjectRow, type RunnerRow } from '../storage/schema.js';
-import type { LocalHost } from '../runtime/LocalHost.js';
 import { RemoteHost } from '../runtime/RemoteHost.js';
-import type { WorkspaceHost } from '../runtime/WorkspaceHost.js';
+import type { ActiveContainer, WorkspaceHost } from '../runtime/WorkspaceHost.js';
 import type { Settings } from '../storage/Settings.js';
 import type { HostHello, HostLoad, Job, JobEvent } from './protocol.js';
-import { tooFull } from '../runtime/Disk.js';
 import { newId, type UpdateEvent } from '@phantom-agent-sdk/client';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { scopeOf } from '../lib/scopes.js';
@@ -70,14 +67,8 @@ export class Runners {
 
   constructor(
     private readonly database: Drizzle,
-    readonly local: LocalHost,
-    private readonly opts: { runsContainers: boolean; settings?: Settings },
+    private readonly opts: { settings?: Settings },
   ) {}
-
-  /** Whether NEW workspaces may be placed on this server itself
-   *  (RUN_SESSION_CONTAINERS=1; the default is 0). What it already holds it
-   *  serves either way. */
-  get runsContainers(): boolean { return this.opts.runsContainers; }
 
   /** How often a runner beats (`runner_heartbeat_ms`): told to each at
    *  hello; three silent beats and its feed is hung up on. */
@@ -89,7 +80,7 @@ export class Runners {
   /** The registered hosts, as proxies — offline until each connects. */
   async load(): Promise<void> {
     for (const row of await this.database.select().from(runners)) { this.#remote.set(row.id, new RemoteHost(row.id, row.name)); this.#facts.set(row.id, row.facts); }
-    log.info({ hosts: this.#remote.size, runsContainers: this.opts.runsContainers }, 'session runners loaded');
+    log.info({ hosts: this.#remote.size }, 'session runners loaded');
     // A feed whose socket died silently (a laptop off the network) is hung
     // up on here: the host is offline, its jobs wait for its next feed. No
     // event up the relay for three beats = dead, whatever the socket says.
@@ -108,13 +99,15 @@ export class Runners {
 
   // ── routing ───────────────────────────────────────────────────────────
 
-  /** The host a workspace is on. A row that names a host nobody registered
-   *  any more reads as the backend itself — the files are gone with it. */
+  /** The host a workspace is on. A row that names no host, or one nobody
+   *  registered any more, is on none: its files are gone with it. */
   async of(workspaceId: string): Promise<WorkspaceHost> {
     const moving = this.#moving.get(workspaceId);
     if (moving && inMove.getStore() !== workspaceId) await moving;
     const id = await this.hostIdOf(workspaceId);
-    return (id === null ? undefined : this.#remote.get(id)) ?? this.local;
+    const host = id === null ? undefined : this.#remote.get(id);
+    if (!host) throw new RunnerError('not_found', `workspace ${workspaceId} is on no session runner`);
+    return host;
   }
 
   async hostIdOf(workspaceId: string): Promise<string | null> {
@@ -144,7 +137,7 @@ export class Runners {
     finally { this.#moving.delete(workspaceId); done(); }
   }
 
-  byId(id: string | null): WorkspaceHost | undefined { return id === null ? this.local : this.#remote.get(id); }
+  byId(id: string | null): WorkspaceHost | undefined { return id === null ? undefined : this.#remote.get(id); }
   /** The SESSION runners whose link is up right now: the ones maintenance
    *  reaches (the warm checkouts, the disk sweep — a client runner has
    *  neither a volume nor Docker). */
@@ -159,19 +152,18 @@ export class Runners {
   // ── placement ─────────────────────────────────────────────────────────
 
   /** Where a new workspace of `project` for `userId` goes. The tiers, in order: the user's own online
-   *  hosts; shared online hosts; the backend host. Within a tier: a host
-   *  that cannot take a checkout — its disk under the sweep's floor, or it
-   *  cannot hold the project's disk limit — is not a candidate; the lowest
-   *  CPU wins; equal CPUs, one at random. A host that has not beaten yet
-   *  reads as idle. */
+   *  hosts; shared online hosts. Within a tier: a host
+   *  that cannot hold the project's disk limit is not a candidate; the
+   *  lowest CPU wins; equal CPUs, one at random. A host that has not beaten
+   *  yet reads as idle. Disk space is never a reason: keeping the disk under
+   *  the rule is the maintenance jobs' work, not placement's. */
   async place(project: ProjectRow, userId: string | null): Promise<WorkspaceHost> {
     const rows = await this.database.select().from(runners);
     const online = rows.filter((row) => this.#remote.get(row.id)?.online);
     const settings = this.opts.settings;
     const diskGb = settings ? await settings.resolve<number | null>('container_disk_gb', scopeOf(project)).catch(() => null) : null;
-    const pct = settings ? Number(await settings.resolve('disk_cleanup_percent').catch(() => 0)) : 0;
     const loadOf = (row: RunnerRow) => this.#remote.get(row.id)!.load;
-    const able = online.filter((row) => runsSessions(row.facts) && (!diskGb || row.facts.diskSupport === null) && !(loadOf(row) && tooFull(loadOf(row)!, pct)));
+    const able = online.filter((row) => runsSessions(row.facts) && (!diskGb || row.facts.diskSupport === null));
     const cpuOf = (row: RunnerRow) => loadOf(row)?.cpu ?? 0;
     const least = (tier: RunnerRow[]): RunnerRow | undefined => {
       if (!tier.length) return undefined;
@@ -182,10 +174,9 @@ export class Runners {
     const chosen = (userId ? least(able.filter((row) => row.ownerUserId === userId)) : undefined)
       ?? least(able.filter((row) => row.ownerUserId === null));
     if (chosen) return this.#remote.get(chosen.id)!;
-    if (this.opts.runsContainers) return this.local;
     throw new RunnerError('no_host', userId
       ? 'no session runner is online for you — start one (phantom-cli runner start) or ask for a shared runner'
-      : 'no shared runner runner is online, and this server runs no session containers itself');
+      : 'no shared session runner is online');
   }
 
   /** Where a handed-off turn goes: an online runner that can drive
@@ -215,14 +206,19 @@ export class Runners {
     return new Map(rows.flatMap((row) => (row.hostId ? [[row.hostId, row.n] as const] : [])));
   }
 
-  /** Running containers on every host that can answer right now — this
-   *  server's own included whatever it places, for what it still holds. */
-  async activeWorkspaces(): Promise<string[]> {
-    const lists = await Promise.all([
-      this.local.activeWorkspaces().catch(() => [] as string[]),
-      ...this.onlineRunners().map((host) => host.activeWorkspaces()),
-    ]);
+  /** Running session containers on every runner that can answer right now. */
+  async activeContainers(): Promise<ActiveContainer[]> {
+    const lists = await Promise.all(this.onlineRunners().map((host) => host.activeWorkspaces()));
     return lists.flat();
+  }
+
+  /** Null when an online session runner can hold a container to
+   *  `container_disk_gb`; else why not. */
+  diskSupport(): string | null {
+    const online = this.onlineRunners();
+    if (!online.length) return 'no session runner is online';
+    const reasons = online.map((host) => this.#facts.get(host.id)?.diskSupport ?? null);
+    return reasons.includes(null) ? null : reasons[0]!;
   }
 
   // ── the link ──────────────────────────────────────────────────────────

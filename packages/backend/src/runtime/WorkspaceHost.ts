@@ -69,6 +69,9 @@ export interface ContainerPlan {
   databaseHost: string | null;
 }
 
+/** A running session container: its workspace, and the image it was created from. */
+export interface ActiveContainer { workspaceId: string; image: string }
+
 export type ContainerState = 'running' | 'stopped' | 'absent';
 
 /** What a detached command reports as it runs: its process-session id once
@@ -103,8 +106,9 @@ export interface WorkspaceHost {
   containerRemove(workspaceId: string): Promise<void>;
   /** Probed, never created. */
   containerState(workspaceId: string): Promise<ContainerState>;
-  /** The workspaces with a running container on this host. */
-  activeWorkspaces(): Promise<string[]>;
+  /** The running session containers on this host: each one's workspace
+   *  and the image it runs. */
+  activeWorkspaces(): Promise<ActiveContainer[]>;
   /** Exec on the running container. The container must be up (containerUp). */
   sandbox(workspaceId: string): Sandbox;
   /** A command that outlives the call: its output goes to
@@ -127,6 +131,7 @@ export interface WorkspaceHost {
   /** The warm-checkout tick for these projects, against this box's volume
    *  (CheckoutPool.tick); a tick under a running one is dropped. */
   poolTick(projects: PoolProject[]): Promise<void>;
-  /** Remove release images older than each of `keep` that no container uses. */
-  removeOldImages(keep: string[]): Promise<void>;
+  /** Remove release images older than each of `keep` that no container
+   *  uses; answers how many. */
+  removeOldImages(keep: string[]): Promise<number>;
 }

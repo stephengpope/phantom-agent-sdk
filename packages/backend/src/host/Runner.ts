@@ -174,7 +174,6 @@ export class Runner {
     }
     if (this.opts.sessions) {
       await checkoutPool.bootCleanup(this.opts.paths);
-      await this.#local.retireOldContainers();
     }
     const idFile = path.join(this.opts.paths.root, 'host.json');
     const persisted: { id?: string } = await fs.readFile(idFile, 'utf8').then((text) => JSON.parse(text) as { id?: string }, () => ({}));
@@ -280,7 +279,7 @@ export class Runner {
       case 'disk': return result(await local.disk());
       case 'diskSupport': return result(await local.diskSupport());
       case 'poolTick': await local.poolTick(job.projects); return result(null);
-      case 'removeOldImages': await local.removeOldImages(job.keep); return result(null);
+      case 'removeOldImages': return result(await local.removeOldImages(job.keep));
       case 'exec': {
         const ran = await local.sandbox(job.workspaceId).run(job.argv, {
           cwd: job.cwd, maxBytes: job.maxBytes, timeoutMs: job.timeoutMs,
