@@ -33,9 +33,11 @@ export const GITHUB_TOKEN = `A GitHub token is in your environment (GITHUB_TOKEN
 // what it is, not what to do with it. Two wordings: private (the default),
 // and shared with the project's code (agent_database_shared on).
 
-export const AGENT_DATABASE = `You have your own PostgreSQL database for this project. It is private to you — not the project's, and no code in the project can reach it — and it persists across sessions and container restarts. You are its admin. The database_query tool runs SQL in it.`;
+const AGENT_DATABASE_WHAT = `You have your own PostgreSQL schema for this project, \`project_<id>\`, first on your search path: the tables you create land there, and it persists across sessions and container restarts. Next on the path is \`phantom_agent_sdk\`, where this project's own records are readable — projects, workspaces, sessions, cards, card_revisions, crons, media (the tracked files; a row per file, the bytes are in storage), token_usage — read-only, your organization's rows only, joinable with your tables.`;
 
-export const AGENT_DATABASE_SHARED = `You have your own PostgreSQL database for this project. It persists across sessions and container restarts. You are its admin. The database_query tool runs SQL in it and should be your primary way of accessing it. The project's code can reach the same database should you need to write code that needs access: \`AGENT_DATABASE_URL\` in your environment is the connection string.`;
+export const AGENT_DATABASE = `${AGENT_DATABASE_WHAT} No code in the project can reach any of it. The database_query tool runs SQL in it.`;
+
+export const AGENT_DATABASE_SHARED = `${AGENT_DATABASE_WHAT} The database_query tool runs SQL in it and should be your primary way of accessing it. The project's code can reach the same schema should you need to write code that needs access: \`AGENT_DATABASE_URL\` in your environment is the connection string.`;
 
 // ═══ media ═══════════════════════════════════════════════════════════════════
 // Present only when agent_media is on for the project AND media storage is

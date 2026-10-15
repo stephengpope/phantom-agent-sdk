@@ -1,5 +1,5 @@
-// The DATABASE tool — database_query: the agent's own Postgres database for
-// the project (databases.ts). Offered when the project's `agent_database`
+// The DATABASE tool — database_query: the agent's own schema plus a fenced
+// read of the project's records (storage/AgentDatabases.ts). Offered when the project's `agent_database`
 // is on and the server has database wiring; absent otherwise — a missing
 // tool, never a failing one.
 import { SqlError } from '../storage/AgentDatabases.js';
@@ -12,8 +12,9 @@ const enabled = async ({ app, project }: OfferCtx) =>
 export const DATABASE_TOOLS: ToolDef[] = [
   {
     name: 'database_query',
-    summary: 'Run SQL in your own database.',
-    description: 'Run SQL in your own database. Several statements allowed; they run as ONE transaction — any error ' +
+    summary: 'Run SQL: your own schema, and this project\'s records read-only.',
+    description: 'Run SQL as this project. Your own schema (first on the search path) is yours to build in; the ' +
+      'phantom_agent_sdk tables (cards, sessions, media, …) are readable, your organization\'s rows only. Several statements allowed; they run as ONE transaction — any error ' +
       'undoes the whole call. No state survives between calls (SET, TEMP tables, cursors are gone next call). 30 s limit ' +
       'per statement. `params` fills $1…$n and needs a single statement. Rows: the first `limit` (default 10), `rowCount` ' +
       'is the true total. Cells over `maxCellChars` (default 1000) end in `…[truncated, N chars]`. Duplicate column names ' +

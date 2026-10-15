@@ -1,4 +1,4 @@
-// The agent's own database, per project (databases.ts). Two routes, both
+// The agent's SQL, per project (storage/AgentDatabases.ts). Two routes, both
 // behind the project's `agent_database` setting — the ONE place that says
 // whether the agent has a database:
 //
@@ -17,7 +17,7 @@ export function databaseRoutes(app: FastifyInstance, ctx: PhantomBackend) {
   app.get<{ Params: { id: string } }>(
     '/projects/:id/database', { schema: { ...TAG,
       summary: 'Check the agent database',
-      description: 'Whether the project\'s agent has its own PostgreSQL database turned on.',
+      description: 'Whether the project\'s agent has SQL turned on: its own schema, and a fenced read of the project\'s records.',
       params: idParam } },
     async (req, reply) => {
       const project = await ctx.projects.get(req.params.id);
@@ -29,7 +29,7 @@ export function databaseRoutes(app: FastifyInstance, ctx: PhantomBackend) {
   app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; maxCellChars?: number; params?: unknown[] } }>(
     '/projects/:id/database/query', { schema: { ...TAG,
       summary: 'Query the agent database',
-      description: 'Runs SQL in the project\'s agent database and returns the result of each statement.',
+      description: 'Runs SQL as the project\'s agent login and returns the result of each statement.',
       params: idParam,
       body: { type: 'object', required: ['sql'], additionalProperties: false,
         properties: {

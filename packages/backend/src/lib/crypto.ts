@@ -11,7 +11,7 @@ import { createCipheriv, createDecipheriv, createHmac, randomBytes, timingSafeEq
 /** A Postgres role's password, derived from the encryption key and the
  *  role's label — stored nowhere, re-set on every boot (so a rotated key
  *  heals itself), never leaves this process. The backend's own roles and
- *  every agent play-space role get theirs this way. */
+ *  every project login (AgentDatabases) get theirs this way. */
 export function derivedPassword(key: Buffer, label: string): string {
   return createHmac('sha256', key).update(label).digest('base64url');
 }

@@ -1,5 +1,5 @@
-// The SQL runner the agent's play space and `Database.queryAs` share: a
-// caller's statements on one connection, one result per statement with the
+// The SQL runner behind the agent's database_query (AgentDatabases): the
+// agent's statements on one connection, one result per statement with the
 // first `limit` rows and the true row count, Postgres's own words on a
 // refusal. Rows are read as they stream and dropped past `limit`, so the
 // server never holds a result bigger than what was asked for; rows come

@@ -15,18 +15,22 @@
 //               keys, policies that join them) and never alter them.
 //   backend     the running process — SDK code and user space code, one
 //               pool. Reads and writes rows past every policy (BYPASSRLS);
-//               creates and drops agent play-space databases and roles;
+//               creates and drops agent schemas and roles (AgentDatabases);
 //               cannot alter a table.
 //   authenticated  a user. Work done for one (lib/acting.ts) runs on the
 //               backend's pool switched to this role for each statement,
 //               naming the user's organization and user; the row-level
 //               policies decide every row. It reaches only the tables a
 //               migration grants it.
-//   project_<id> an agent's play space, everything inside its own database
-//               (AgentDatabases).
+//   agent       the group every project login belongs to: `connect`, and
+//               the grants and policies SDK migration 067 names. Never
+//               logs in itself.
+//   project_<id> an agent (AgentDatabases): a login in the `agent` group
+//               with its own schema. Fenced by the row-level policies like
+//               a user; its organization is its project's.
 //
 // The passwords are derived from ENCRYPTION_KEY (lib/crypto
-// derivedPassword), the same way every play-space role's is: stored
+// derivedPassword), the same way every project login's is: stored
 // nowhere, re-set on every boot.
 //
 // Migrations are plain SQL files applied in name order, each in its own
@@ -42,8 +46,6 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from './schema.js';
 import { derivedPassword } from '../lib/crypto.js';
 import { logger } from '../lib/log.js';
-import { AGENT_TYPES, runStatements, type QueryOptions, type StatementResult } from './sqlRunner.js';
-import type { Caller } from '../identity/Identity.js';
 import { acting } from '../lib/acting.js';
 
 const log = logger('database');
@@ -77,6 +79,9 @@ export const APP_MIGRATOR_ROLE = 'app_migrator';
 export const SERVICE_ROLE = 'service_role';
 const SERVICE_ROLE_FORMERLY = 'backend';
 export const AUTHENTICATED_ROLE = 'authenticated';
+/** The group every project login (AgentDatabases) is a member of: what
+ *  the SDK's migrations grant to the agent, they grant to this role. */
+export const AGENT_ROLE = 'agent';
 
 /** The SDK's schemas — the migrator's. Every other schema of ours is user
  *  space's, the app_migrator's. */
@@ -85,7 +90,6 @@ const SDK_SCHEMAS = ['phantom_agent_sdk', 'identity'];
 /** The transaction settings the policies read (migration 057). */
 export const ORGANIZATION_SETTING = 'phantom.organization_id';
 export const USER_SETTING = 'phantom.user_id';
-const QUERY_AS_STATEMENT_TIMEOUT = '30s';
 
 /** Postgres's own schemas, never ours to own. `public` is the database
  *  owner's and stays so; a table of ours found in it (the ledger, before
@@ -107,7 +111,6 @@ export class Database {
     readonly url: string,
     private readonly migratorUrl: string,
     private readonly appMigratorUrl: string,
-    private readonly authenticatedUrl: string,
   ) {}
 
   /** Boot. As the bootstrap superuser: the `migrator` and `service_role`
@@ -119,18 +122,17 @@ export class Database {
     const migratorUrl = withRole(superuserUrl, MIGRATOR_ROLE, derivedPassword(encryptionKey, `role:${MIGRATOR_ROLE}`));
     const appMigratorUrl = withRole(superuserUrl, APP_MIGRATOR_ROLE, derivedPassword(encryptionKey, `role:${APP_MIGRATOR_ROLE}`));
     const backendUrl = withRole(superuserUrl, SERVICE_ROLE, derivedPassword(encryptionKey, `role:${SERVICE_ROLE}`));
-    const authenticatedUrl = withRole(superuserUrl, AUTHENTICATED_ROLE, derivedPassword(encryptionKey, `role:${AUTHENTICATED_ROLE}`));
     const superuser = new pg.Client({ connectionString: superuserUrl });
     await superuser.connect();
     try {
       await ensureRoles(superuser, { migrator: new URL(migratorUrl).password, appMigrator: new URL(appMigratorUrl).password,
-        backend: new URL(backendUrl).password, authenticated: new URL(authenticatedUrl).password });
+        backend: new URL(backendUrl).password, authenticated: derivedPassword(encryptionKey, `role:${AUTHENTICATED_ROLE}`) });
     } finally {
       await superuser.end();
     }
     const pool = new pg.Pool({ connectionString: backendUrl });
     return new Database(pool, drizzle(actingPool(pool), { schema }), drizzle(pool, { schema }),
-      backendUrl, migratorUrl, appMigratorUrl, authenticatedUrl);
+      backendUrl, migratorUrl, appMigratorUrl);
   }
 
   /** Apply every unapplied file of the set, in name order, each in its own
@@ -145,34 +147,6 @@ export class Database {
       return await runMigrations(client, set, options);
     } finally {
       await client.end();
-    }
-  }
-
-  /** A caller's own SQL on this database, fenced by Postgres: one
-   *  connection as `authenticated`, one transaction that names the
-   *  caller's organization and user for the row-level policies (057), the
-   *  statements, commit — an error undoes the whole call. The service role
-   *  runs as itself (no policies, as every SDK read). Only a user has
-   *  rows to see; a user with no organization sees none. */
-  async queryAs(caller: Caller, sql: string, options: QueryOptions): Promise<StatementResult[]> {
-    const client = new pg.Client({ connectionString: caller.type === 'service_role' ? this.url : this.authenticatedUrl,
-      connectionTimeoutMillis: 5000, types: AGENT_TYPES });
-    await client.connect();
-    try {
-      await client.query('begin');
-      await client.query(`set local statement_timeout = ${quoteLiteral(QUERY_AS_STATEMENT_TIMEOUT)}`);
-      if (caller.type === 'user') {
-        await client.query('select set_config($1, $2, true), set_config($3, $4, true)',
-          [ORGANIZATION_SETTING, caller.organization.id, USER_SETTING, caller.user.id]);
-      }
-      const results = await runStatements(client, sql, options);
-      await client.query('commit');
-      return results;
-    } catch (error) {
-      await client.query('rollback').catch(() => {});
-      throw error;
-    } finally {
-      await client.end().catch(() => {});
     }
   }
 
@@ -294,6 +268,18 @@ async function ensureRoles(superuser: pg.Client, passwords: { migrator: string; 
   // Work done for a user switches the backend's connection to `authenticated`
   // for each statement (set_config('role', …, true)): the backend may become it.
   await superuser.query(`grant ${authenticated} to ${backend}`);
+  // The agents' group: no login, no bypass. The backend creates each
+  // project's login `in role agent` (AgentDatabases.ensure), which takes
+  // admin on the group.
+  const agent = quoteIdent(AGENT_ROLE);
+  if (!(await superuser.query('select from pg_roles where rolname = $1', [AGENT_ROLE])).rowCount) {
+    await superuser.query(`create role ${agent} nologin nosuperuser nocreatedb nocreaterole nobypassrls`);
+    log.info({ role: AGENT_ROLE }, 'role created');
+  }
+  await superuser.query(`grant ${agent} to ${backend} with admin option`);
+  await superuser.query(`grant connect on database ${database} to ${agent}`);
+  // … and a schema per project (AgentDatabases.ensure) is the backend's to make.
+  await superuser.query(`grant create on database ${database} to ${backend}`);
 
   // Ownership: the SDK's schemas are the migrator's, every other schema of
   // ours user space's (the app_migrator's) — and everything in each. An
@@ -360,7 +346,8 @@ async function ensureRoles(superuser: pg.Client, passwords: { migrator: string; 
   await superuser.query(`alter default privileges for role ${migrator} grant usage on schemas to ${appMigrator}`);
   await superuser.query(`alter default privileges for role ${migrator} grant select, references on tables to ${appMigrator}`);
 
-  // service_role drops a play-space database `with (force)`: ending its open
+  // Before 067 an agent had a database of its own; service_role drops one
+  // `with (force)` when its project goes (AgentDatabases.drop): ending its open
   // connections takes pg_signal_backend. Play spaces made before the split
   // are the superuser's: their databases become service_role's (so it may
   // drop them) and service_role gets admin on their roles (so it may re-set
