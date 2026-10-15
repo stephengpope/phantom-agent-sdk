@@ -89,10 +89,11 @@ export interface WorkspaceHost {
   readonly online: boolean;
 
   // ── the checkout ──────────────────────────────────────────────────────
-  /** The files for a workspace: a warm slot claimed from the pool when the
-   *  host has one, else a fresh clone of `branch` — then `scratch/` and
-   *  `logs/` made. */
-  checkout(workspaceId: string, projectId: string, branch: string, auth: GitAuth): Promise<'claimed' | 'cloned'>;
+  /** The files for a workspace, on `branch`: the project's spare claimed
+   *  when there is one, else a copy of its mirror — no network either way
+   *  (runtime/CheckoutPool.ts) — then `scratch/` and `logs/` made. Answers
+   *  the commit the files are at. */
+  checkout(workspaceId: string, projectId: string, branch: string, auth: GitAuth): Promise<{ claimed: boolean; head: string }>;
   /** The whole workspace directory, gone. */
   removeFiles(workspaceId: string): Promise<void>;
   repo(workspaceId: string): Repo;
@@ -128,8 +129,8 @@ export interface WorkspaceHost {
   /** Null when this host can hold a container to `container_disk_gb`,
    *  else why not. */
   diskSupport(): Promise<string | null>;
-  /** The warm-checkout tick for these projects, against this box's volume
-   *  (CheckoutPool.tick); a tick under a running one is dropped. */
+  /** One pool pass for these projects, against this box's volume
+   *  (CheckoutPool.pass); a pass under a running one is dropped. */
   poolTick(projects: PoolProject[]): Promise<void>;
   /** Remove release images older than each of `keep` that no container
    *  uses; answers how many. */

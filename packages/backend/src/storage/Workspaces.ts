@@ -26,6 +26,7 @@ import { workspaces, sessions, cards, type WorkspaceRow, type ProjectRow } from 
 import type { SessionEvents } from '../agents/SessionEvents.js';
 import type { Settings } from './Settings.js';
 import { checkoutBranch, classifyGitFailure, localState, fetchSubmodules, repoList, type WorkState } from '../git/Git.js';
+import { branchHead } from '../git/GitHub.js';
 import { resolveAuth } from '../runtime/CheckoutPool.js';
 import type { Runners } from '../host/Runners.js';
 import type { WorkspaceHost } from '../runtime/WorkspaceHost.js';
@@ -48,6 +49,9 @@ export interface WorkRefreshWorkspace {
   id: string; projectId: string; branch: string; workState: string | null; card: number | null;
 }
 
+/** Where a checkout's branch starts (obtain). */
+type Start = { kind: 'base' } | { kind: 'origin' } | { kind: 'branch'; from: string };
+
 export class Workspaces {
   constructor(
     private readonly database: Drizzle,
@@ -67,55 +71,73 @@ export class Workspaces {
 
   // ── the files ──────────────────────────────────────────────────────────────
 
-  /** Put the files on disk for `id` on `branch`: claim a warm pool slot or
-   *  clone directly — ONE way to obtain a checkout, not a fast path for some
-   *  callers and a slow one for others (the claim's fetch is what makes the
-   *  result CORRECT; the pool only makes it small) — then check the branch
-   *  out: found on origin (a restart), cut from `fromBranch` (a duplicate),
-   *  or cut fresh from base. Returns HEAD afterwards and how it went.
+  /** Put the files on disk for `id` on `branch`: the project's spare or a
+   *  copy of its mirror (host.checkout — no network), then the branch:
    *
-   *  A missing `fromBranch` is a hard error, never a silent fall back to
-   *  base: the caller flushed the source to origin first, so absent means
+   *    base    a session whose id was minted a moment ago. Nothing to look
+   *            up — the branch name IS the id — so it is cut from base with
+   *            no round trip. Base is verified against GitHub meanwhile
+   *            (one small API call, alongside the files landing): the
+   *            spare is current unless base moved since the pool's last
+   *            pass, and then it is pulled first. No answer from GitHub
+   *            is never read as "unchanged" — it pulls.
+   *    origin  the branch may be on origin: a restart (the row remembers
+   *            it) or an id the caller chose. Fetched; found = start there.
+   *    branch  a duplicate: cut from origin's copy of `from`.
+   *
+   *  ONE way to obtain a checkout, not a fast path for some callers and a
+   *  slow one for others. Returns HEAD afterwards and how it went.
+   *
+   *  A missing `from` is a hard error, never a silent fall back to base:
+   *  the caller flushed the source to origin first, so absent means
    *  something is wrong, and a copy that quietly starts at base loses the
    *  work. A remote failure is classified into a WorkspaceError so the API
    *  answers with its meaning; anything unrecognised keeps its own error. */
-  private async obtain(host: WorkspaceHost, project: ProjectRow, id: string, branch: string, fromBranch?: string):
+  private async obtain(host: WorkspaceHost, project: ProjectRow, id: string, branch: string, start: Start):
   Promise<{ head: string; found: 'existing' | 'new'; claimed: boolean }> {
     const auth = await resolveAuth(this.settings, project);
     const dir = host.repo(id);
+    const base = project.baseBranch;
     try {
-      // The files: a warm slot or a fresh clone of base, on the host — then
-      // the branch, chosen here.
-      const claimed = await host.checkout(id, project.id, project.baseBranch, auth) === 'claimed';
+      const [placed, remote] = await Promise.all([
+        host.checkout(id, project.id, base, auth),
+        start.kind === 'base' ? branchHead(auth.pat, project.owner, project.name, base) : null,
+      ]);
+      if (start.kind === 'base' && remote !== placed.head) {
+        await dir.git(['fetch', 'origin', base], auth);
+        await dir.git(['reset', '--hard', `origin/${base}`], auth);
+        log.info({ workspace: id, had: placed.head.slice(0, 7), github: remote?.slice(0, 7) ?? 'no answer' }, 'base moved since the pool\'s pass — pulled');
+      }
 
-      // The clone is --single-branch: its fetch refspec covers ONLY the
+      // The copy is --single-branch: its fetch refspec covers ONLY the
       // base branch, so without this a push to the session branch would update no
       // tracking ref and every origin/<branch> ancestry check would read as
       // no_upstream forever. One added refspec scopes tracking to exactly this
       // branch; on base there is nothing to add.
-      if (branch !== project.baseBranch) {
+      if (branch !== base) {
         await dir.git(['config', '--add', 'remote.origin.fetch',
           `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
       }
-      let found: 'existing' | 'new';
-      if (fromBranch) {
+      let found: 'existing' | 'new' = 'new';
+      if (start.kind === 'branch') {
         // Cut the branch from origin's copy of the source branch. "No such
         // ref" means the work never made it to origin — an error; checking
         // out from base instead would silently lose it.
         try {
-          await dir.git(['fetch', 'origin', `+refs/heads/${fromBranch}:refs/remotes/origin/${fromBranch}`], auth);
+          await dir.git(['fetch', 'origin', `+refs/heads/${start.from}:refs/remotes/origin/${start.from}`], auth);
         } catch (error) {
           const msg = String((error as { stderr?: string }).stderr ?? error);
           if (/couldn't find remote ref|not found in upstream|no such ref/i.test(msg)) {
             throw new WorkspaceError('source_branch_gone',
-              `the source branch ${fromBranch} is not on origin — its work never made it there, so there is nothing to copy`);
+              `the source branch ${start.from} is not on origin — its work never made it there, so there is nothing to copy`);
           }
           throw error;
         }
-        await dir.git(['checkout', '-B', branch, `refs/remotes/origin/${fromBranch}`], auth);
-        found = 'new';
-      } else {
+        await dir.git(['checkout', '-B', branch, `refs/remotes/origin/${start.from}`], auth);
+      } else if (start.kind === 'origin') {
         found = await checkoutBranch(dir, branch, auth);
+      } else {
+        await dir.git(['checkout', '-B', branch]);
       }
       // Only now is the commit known — the branch above may pin a submodule
       // somewhere base does not — so this is where the submodules are
@@ -127,7 +149,9 @@ export class Workspaces {
         try {
           await fetchSubmodules(dir, auth);
           for (const entry of await repoList(dir, auth.url)) {
-            if (entry.path) await checkoutBranch(entry.repo, branch, { ...auth, url: entry.url! });
+            if (!entry.path) continue;
+            if (start.kind === 'origin') await checkoutBranch(entry.repo, branch, { ...auth, url: entry.url! });
+            else await entry.repo.git(['checkout', '-B', branch]);
           }
         } catch (error) {
           throw new WorkspaceError('submodule_failed',
@@ -135,7 +159,7 @@ export class Workspaces {
         }
       }
       const { stdout } = await dir.git(['rev-parse', 'HEAD']);
-      return { head: stdout.trim(), found, claimed };
+      return { head: stdout.trim(), found, claimed: placed.claimed };
     } catch (error) {
       if (error instanceof WorkspaceError) throw error;
       const why = classifyGitFailure(error, { hadToken: !!auth.pat });
@@ -148,16 +172,18 @@ export class Workspaces {
    *  the files on disk, the row born with them — the branch and the commit
    *  it was cut from (`cut_from_sha`, what /git/status measures against).
    *  `fromBranch` cuts it from origin's copy of that branch instead of base
-   *  (the duplicate route). */
-  async checkout(project: ProjectRow, id: string, opts: { fromBranch?: string } = {}): Promise<WorkspaceRow> {
+   *  (the duplicate route). `chosenId`: the caller named the id rather than
+   *  minting it, so its branch may already be on origin and is looked up. */
+  async checkout(project: ProjectRow, id: string, opts: { fromBranch?: string; chosenId?: boolean } = {}): Promise<WorkspaceRow> {
     const branch = `${project.branchPrefix}/${id}`;
+    const start: Start = opts.fromBranch ? { kind: 'branch', from: opts.fromBranch } : opts.chosenId ? { kind: 'origin' } : { kind: 'base' };
     // PLACEMENT, once: the host this checkout lives on from now on (the
     // acting user's own runner when they have one online, else a shared one,
     // else this server — host/Runners.ts).
     const host = await this.hosts.place(project, acting()?.userId ?? null);
     this.hosts.remember(id, host.id);
     let obtained;
-    try { obtained = await this.obtain(host, project, id, branch, opts.fromBranch); }
+    try { obtained = await this.obtain(host, project, id, branch, start); }
     catch (error) { this.hosts.forget(id); throw error; }
     const { head, found, claimed } = obtained;
     const [row] = await this.database.insert(workspaces)
@@ -173,7 +199,7 @@ export class Workspaces {
    *  cut point stays what it was. */
   async restore(workspace: WorkspaceRow, project: ProjectRow): Promise<void> {
     const host = await this.hosts.of(workspace.id);
-    const { found } = await this.obtain(host, project, workspace.id, workspace.branch);
+    const { found } = await this.obtain(host, project, workspace.id, workspace.branch, { kind: 'origin' });
     await this.database.update(workspaces).set({ onDisk: true, lastUsedAt: new Date() }).where(eq(workspaces.id, workspace.id));
     log.info({ workspace: workspace.id, branch: workspace.branch, found, host: host.name }, 'checkout restored');
     this.changed(workspace.id);
@@ -183,7 +209,7 @@ export class Workspaces {
    *  the row remembers, checked out there. No row write; the move pins the
    *  row once everything else succeeded. */
   async checkoutOn(host: WorkspaceHost, workspace: WorkspaceRow, project: ProjectRow): Promise<void> {
-    const { found } = await this.obtain(host, project, workspace.id, workspace.branch);
+    const { found } = await this.obtain(host, project, workspace.id, workspace.branch, { kind: 'origin' });
     log.info({ workspace: workspace.id, branch: workspace.branch, found, host: host.name }, 'checkout made on another host');
   }
 

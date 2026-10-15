@@ -15,8 +15,8 @@ import { buildContainerSpec } from './SessionContainers.js';
 import type { Images } from './Images.js';
 import type { Paths } from '../lib/paths.js';
 import { sessionDir, repoDir } from '../lib/paths.js';
-import { git, cloneFresh, localRepo, type GitAuth } from '../git/Git.js';
-import { claimSlot, tick as poolTick, type PoolProject } from './CheckoutPool.js';
+import { headOf, localRepo, type GitAuth } from '../git/Git.js';
+import { CheckoutPool, type PoolProject } from './CheckoutPool.js';
 import { WorkspaceWatcher } from '../git/WorkspaceWatcher.js';
 import { logger, errStr } from '../lib/log.js';
 
@@ -121,6 +121,8 @@ export class LocalHost implements WorkspaceHost {
   readonly name: string;
   readonly online = true;
   private readonly watcher = new WorkspaceWatcher();
+  /** This box's mirrors and spares (runtime/CheckoutPool.ts). */
+  readonly pool: CheckoutPool;
   /** Serialized per workspace so two simultaneous tool calls cannot double-create. */
   private readonly inflight = new Map<string, Promise<{ created: boolean }>>();
 
@@ -133,6 +135,7 @@ export class LocalHost implements WorkspaceHost {
   ) {
     this.id = identity.id;
     this.name = identity.name;
+    this.pool = new CheckoutPool(paths);
   }
 
   /** End the watcher child. */
@@ -140,21 +143,13 @@ export class LocalHost implements WorkspaceHost {
 
   // ── the checkout ──────────────────────────────────────────────────────
 
-  async checkout(workspaceId: string, projectId: string, branch: string, auth: GitAuth): Promise<'claimed' | 'cloned'> {
+  async checkout(workspaceId: string, projectId: string, branch: string, auth: GitAuth): Promise<{ claimed: boolean; head: string }> {
     const dest = sessionDir(this.paths, workspaceId);
-    const dir = repoDir(this.paths, workspaceId);
-    const claimed = await claimSlot(this.paths, projectId, branch, dest);
-    if (claimed) {
-      // Pool slots are pristine by construction, so the unguarded catch-up is
-      // safe — and mandatory: a slot stocked days ago is days behind.
-      await git(dir, ['fetch', 'origin', branch], auth);
-      await git(dir, ['reset', '--hard', `origin/${branch}`], auth);
-    } else {
-      await cloneFresh(dir, auth, branch);
-      await fs.mkdir(`${dest}/scratch`, { recursive: true });
-    }
+    const source = { id: projectId, baseBranch: branch, auth };
+    const claimed = await this.pool.claim(source, dest);
+    if (!claimed) await this.pool.copy(source, dest);
     await fs.mkdir(`${dest}/logs`, { recursive: true }); // detached exec logs — outside repo/, or add -A commits them
-    return claimed ? 'claimed' : 'cloned';
+    return { claimed, head: await headOf(repoDir(this.paths, workspaceId), 'HEAD') };
   }
 
   async removeFiles(workspaceId: string): Promise<void> {
@@ -330,7 +325,7 @@ export class LocalHost implements WorkspaceHost {
    *  data share the host's one disk in any standard install, so this speaks
    *  for both. `bavail` (what an unprivileged user may still use) is the
    *  honest measure of "full". */
-  poolTick(projects: PoolProject[]): Promise<void> { return poolTick(projects, this.paths); }
+  poolTick(projects: PoolProject[]): Promise<void> { return this.pool.pass(projects); }
   removeOldImages(keep: string[]): Promise<number> { return this.images.removeOlderThan(keep); }
 
   async disk(): Promise<{ usedPct: number; freeGB: number }> {

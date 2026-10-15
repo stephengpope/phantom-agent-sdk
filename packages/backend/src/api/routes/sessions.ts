@@ -122,6 +122,23 @@ const SYSTEM_PROMPT_LAYOUT = { type: 'object', required: ['stable', 'context', '
 const unknownBlock = (reply: FastifyReply, error: unknown) =>
   error instanceof SystemPromptError ? reply.code(400).send(err(error.code, error.message)) : undefined;
 
+/** ONE session on the wire — what `POST /sessions` and `GET /sessions/:id`
+ *  both answer, so a client that just created a session holds exactly what
+ *  a later read would give it and need not read again. */
+async function sessionWire(ctx: PhantomBackend, session: SessionRow, systemPrompt: StoredSystemPrompt | null | undefined) {
+  const card = await ctx.cards.ofSession(session.id);
+  return { ...session, card: card?.number ?? null,
+    system_prompt: systemPrompt === undefined ? await ctx.sessions.systemPrompt(session.id) : systemPrompt,
+    // Computed like the list's, and for the same reason: the cli polls this
+    // route while a session runs elsewhere (lock state + stamp, one GET)
+    // and must not compare clocks with the server.
+    locked: isHeld(session),
+    // The transcript stamp, for cheap is-my-memory-current checks on
+    // switch. (`transcriptUpdatedAt` in the spread is the same value; the
+    // cli reads this name.)
+    transcript_updated_at: session.transcriptUpdatedAt?.toISOString() ?? null };
+}
+
 export function sessionRoutes(app: FastifyInstance, ctx: PhantomBackend) {
   app.post<{ Body: { project_id: string; type: string; id?: string; workspace_session_id?: string | null;
     system_prompt_layout: SystemPromptLayout } }>('/sessions', { schema: { ...TAG,
@@ -139,8 +156,9 @@ export function sessionRoutes(app: FastifyInstance, ctx: PhantomBackend) {
       } } } }, async (req, reply) => {
     if (!req.body?.project_id) return reply.code(400).send(err('missing_project', 'body.project_id required'));
     try {
-      return reply.code(201).send(ok(await ctx.sessions.start(req.body.project_id, req.body.system_prompt_layout,
-        { id: req.body.id, type: req.body.type, startedBy: actorOf(req), workspaceSessionId: req.body.workspace_session_id })));
+      const { system_prompt, ...session } = await ctx.sessions.start(req.body.project_id, req.body.system_prompt_layout,
+        { id: req.body.id, type: req.body.type, startedBy: actorOf(req), workspaceSessionId: req.body.workspace_session_id });
+      return reply.code(201).send(ok(await sessionWire(ctx, session, system_prompt)));
     } catch (error) {
       if (unknownBlock(reply, error)) return;
       // Nowhere to put the checkout: no session runner online for this user,
@@ -632,17 +650,7 @@ export function sessionRoutes(app: FastifyInstance, ctx: PhantomBackend) {
     params: idParam } }, async (req, reply) => {
     const session = await ctx.sessions.get(req.params.id);
     if (!session) return reply.code(404).send(err('session_not_found', `no session ${req.params.id}`));
-    const card = await ctx.cards.ofSession(session.id);
-    return ok({ ...session, card: card?.number ?? null,
-      system_prompt: await ctx.sessions.systemPrompt(session.id),
-      // Computed like the list's, and for the same reason: the cli polls this
-      // route while a session runs elsewhere (lock state + stamp, one GET)
-      // and must not compare clocks with the server.
-      locked: isHeld(session),
-      // The transcript stamp, for cheap is-my-memory-current checks on
-      // switch. (`transcriptUpdatedAt` in the spread is the same value; the
-      // cli reads this name.)
-      transcript_updated_at: session.transcriptUpdatedAt?.toISOString() ?? null });
+    return ok(await sessionWire(ctx, session, undefined));
   });
 
   app.patch<{ Params: { id: string }; Body: { name?: string | null; plan_mode?: boolean; pinned?: boolean;

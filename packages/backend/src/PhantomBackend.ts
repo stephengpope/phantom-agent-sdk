@@ -38,7 +38,7 @@ import { Images } from './runtime/Images.js';
 import { SessionContainers } from './runtime/SessionContainers.js';
 import { GitService, type GitHooks } from './git/GitService.js';
 import { Maintenance } from './maintenance/Maintenance.js';
-import { restockSpareClones } from './maintenance/restockSpareClones.js';
+import { checkSpareClones } from './maintenance/checkSpareClones.js';
 import { backupIdleSessions } from './maintenance/backupIdleSessions.js';
 import { removeOldContainers } from './maintenance/removeOldContainers.js';
 import { removeUnusedImages } from './maintenance/removeUnusedImages.js';
@@ -242,7 +242,7 @@ export class PhantomBackend {
       sessionNotes: this.sessionNotes, sessionContainers: this.sessionContainers,
     }, config.git ?? {});
     this.maintenance = new Maintenance(this.settings, [
-      restockSpareClones({ projects: this.projects, settings: this.settings, runners: this.runners }),
+      checkSpareClones({ projects: this.projects, settings: this.settings, runners: this.runners }),
       backupIdleSessions({ projects: this.projects, sessions: this.sessions, gitSync: this.git.sync }),
       removeOldContainers({ settings: this.settings, workspaces: this.workspaces, projects: this.projects, sessionContainers: this.sessionContainers, busy: (ids) => this.busyWorkspaces(ids) }),
       removeUnusedImages({ settings: this.settings, runners: this.runners, images: this.images }),

@@ -40,6 +40,12 @@ export class SessionRecord {
     return new SessionRecord(backend, sessionId, lines, reply.lines, reply.updated_at);
   }
 
+  /** The record of a session with nothing written yet — a row just
+   *  created. Exactly what `load` would answer, without the round trip. */
+  static empty(backend: BackendClient, sessionId: string): SessionRecord {
+    return new SessionRecord(backend, sessionId, [], 0, null);
+  }
+
   /** The server's last-changed mark for the copy held here. */
   get stamp(): string | null { return this.#stamp; }
   /** The tokens the record accounts for, whoever wrote them. */

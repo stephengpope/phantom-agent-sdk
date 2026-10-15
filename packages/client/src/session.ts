@@ -28,6 +28,15 @@ export interface SessionRow {
   agent: string | null;
   name: string | null;
   planMode: boolean;
+  pinned: boolean;
+  /** The checkout's branch; null for a session with no files of its own. */
+  branch: string | null;
+  /** The card this session builds, by number; null when none. */
+  card: number | null;
+  provider: string | null;
+  model: string | null;
+  /** Lines in the transcript as the server holds it. */
+  transcriptLines: number;
   system_prompt: StoredSystemPrompt | null;
 }
 
@@ -83,11 +92,22 @@ export class Session implements SessionInfo {
     this.#messages = conversationFrom(record.lines);
   }
 
-  /** The row as it stands, then the record. Loading only reads. `handlers`
-   *  hears the one failure that must not throw over another: a lock release. */
+  /** The row as it stands and the record, read together. Loading only
+   *  reads. `handlers` hears the one failure that must not throw over
+   *  another: a lock release. */
   static async load(backend: BackendClient, handlers: { onError(error: PhantomError): void }, sessionId: string): Promise<Session> {
-    const row = await backend.call<SessionRow>('GET', `/sessions/${sessionId}`);
-    return new Session(backend, handlers, row, await SessionRecord.load(backend, sessionId));
+    const [row, record] = await Promise.all([
+      backend.call<SessionRow>('GET', `/sessions/${sessionId}`), SessionRecord.load(backend, sessionId)]);
+    return new Session(backend, handlers, row, record);
+  }
+
+  /** A session from the row the server answered on creating it: nothing
+   *  has been said, so the record is empty by definition and no read is
+   *  needed. A row that already holds lines (a restart under a chosen id)
+   *  is loaded instead. */
+  static fresh(backend: BackendClient, handlers: { onError(error: PhantomError): void }, row: SessionRow): Promise<Session> {
+    if (row.transcriptLines > 0) return Session.load(backend, handlers, row.id);
+    return Promise.resolve(new Session(backend, handlers, row, SessionRecord.empty(backend, row.id)));
   }
 
   get id(): string { return this.#row.id; }

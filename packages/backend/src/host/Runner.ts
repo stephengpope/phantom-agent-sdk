@@ -23,7 +23,6 @@ import { LocalHost, type LocalHostOptions } from '../runtime/LocalHost.js';
 import { Images } from '../runtime/Images.js';
 import { makeDocker } from '../runtime/Docker.js';
 import { makePaths, type Paths } from '../lib/paths.js';
-import * as checkoutPool from '../runtime/CheckoutPool.js';
 import { type Job, type JobEvent, type HostHello, type HostLoad, type TurnJobResult, encodeError, fromBase64, toBase64 } from './protocol.js';
 import { SDK_VERSION } from '../sdkVersion.js';
 import { APP_VERSION, API_IMAGE, SESSION_IMAGE } from '../lib/env.js';
@@ -173,7 +172,7 @@ export class Runner {
       }
     }
     if (this.opts.sessions) {
-      await checkoutPool.bootCleanup(this.opts.paths);
+      await this.#local.pool.bootCleanup();
     }
     const idFile = path.join(this.opts.paths.root, 'host.json');
     const persisted: { id?: string } = await fs.readFile(idFile, 'utf8').then((text) => JSON.parse(text) as { id?: string }, () => ({}));

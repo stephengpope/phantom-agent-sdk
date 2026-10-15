@@ -25,7 +25,7 @@ export { CATALOG_PROVIDERS, hasCatalog, fromModelsDev, fetchCatalog, writeSnapsh
 export { logger, errStr } from './lib/log.js';
 export { Clock, TIMEZONES } from './lib/clock.js';
 export { GLOBAL, LAYERS, SERVICE_ROLE_ORGANIZATION, projectScope, organizationScope, userScope, scopeOf, actingScope, scopeNames, layerOf, type Layer, type OverridableLayer } from './lib/scopes.js';
-export { makePaths, sessionDir, repoDir, slotPrefix, slotUlid, type Paths } from './lib/paths.js';
+export { makePaths, sessionDir, repoDir, slotPrefix, mirrorDir, type Paths } from './lib/paths.js';
 export { encrypt, decrypt, timingSafeEqualStr } from './lib/crypto.js';
 
 // the vocabulary both halves speak

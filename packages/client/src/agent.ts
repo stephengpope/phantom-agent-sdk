@@ -24,7 +24,7 @@ import { systemMessages, CACHED_BLOCKS } from './model/cache.js';
 import { ModelResolver, type ResolvedModel } from './model/modelResolver.js';
 import type { SystemModelMessage, Tool } from 'ai';
 import { BACKEND_RETRY, MODEL_RETRY, type RetryPolicy } from './model/retry.js';
-import { Session, type SessionInfo, type TurnStart, type HandoffTarget } from './session.js';
+import { Session, type SessionInfo, type SessionRow, type TurnStart, type HandoffTarget } from './session.js';
 import { ToolKitSet, serverToolKit, type ToolKit } from './toolkit.js';
 import { runTurn, type TurnResult } from './turn.js';
 import { UserMessageQueue, type UserMessages } from './userMessages.js';
@@ -116,20 +116,23 @@ export abstract class Agent {
 
   // ── resuming / creating ────────────────────────────────────────────────
 
-  /** An existing session: the row as it stands, then the record. Its first
+  /** An existing session: the row as it stands and the record. Its first
    *  turn reassembles the prompt's volatile section — the facts most likely
    *  to have moved since the row was born. */
   static async resumeSession<T extends Agent>(this: AgentClass<T>, backend: BackendClient, handlers: AgentHandlers, sessionId: string): Promise<T> {
-    const agent = await Agent.#build(this, backend, handlers, () => Promise.resolve(sessionId), `resuming session ${sessionId}`);
+    const agent = await Agent.#build(this, backend, handlers,
+      (connection) => Session.load(connection, handlers, sessionId), `resuming session ${sessionId}`);
     agent.#rebuildSystemPrompt = true;
     return agent;
   }
 
   /** A new session: the app makes the row its own way (the route is the
-   *  app's) and answers its id; then as `resumeSession`. */
+   *  app's) and answers it — the row as created IS the session; nothing is
+   *  read back. */
   static async create<T extends Agent>(this: AgentClass<T>, backend: BackendClient, handlers: AgentHandlers,
-    createRow: (backend: BackendClient) => Promise<{ id: string }>): Promise<T> {
-    return Agent.#build(this, backend, handlers, async (connection) => (await createRow(connection)).id, 'creating the session');
+    createRow: (backend: BackendClient) => Promise<SessionRow>): Promise<T> {
+    return Agent.#build(this, backend, handlers,
+      async (connection) => Session.fresh(connection, handlers, await createRow(connection)), 'creating the session');
   }
 
   // ── the app's side ─────────────────────────────────────────────────────
@@ -512,10 +515,10 @@ export abstract class Agent {
    *  session read, the agent built and wired. Every failure reaches onError
    *  first, then the caller. */
   static async #build<T extends Agent>(ctor: AgentClass<T>, backend: BackendClient, handlers: AgentHandlers,
-    sessionId: (connection: BackendClient) => Promise<string>, what: string): Promise<T> {
+    load: (connection: BackendClient) => Promise<Session>, what: string): Promise<T> {
     try {
       const connection = backend.withRetry({ ...BACKEND_RETRY, ...handlers.retry?.backend }, (text) => handlers.onNotice({ type: 'retry', text }));
-      return new ctor({ backend: connection, handlers, session: await Session.load(connection, handlers, await sessionId(connection)) }).#wire();
+      return new ctor({ backend: connection, handlers, session: await load(connection) }).#wire();
     } catch (error) {
       const phantomError = asPhantomError(error, 'internal', what);
       handlers.onError(phantomError);

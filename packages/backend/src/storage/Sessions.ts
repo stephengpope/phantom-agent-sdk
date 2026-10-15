@@ -592,7 +592,7 @@ export class Sessions {
     // The workspace (the checkout) and the session (the conversation) are born
     // together, sharing the id.
     const id = opts.id ?? newId();
-    const workspace = await this.workspaces.checkout(project, id, { fromBranch: opts.fromBranch });
+    const workspace = await this.workspaces.checkout(project, id, { fromBranch: opts.fromBranch, chosenId: !!opts.id });
     await this.database.insert(sessions).values({ id, projectId, workspaceId: id, agent: type, startedBy: opts.startedBy ?? PERSON, ...await this.birthModel(projectId, type) });
     const row = (await this.get(id))!;
     log.info({ session: id, branch: workspace.branch }, 'session created');

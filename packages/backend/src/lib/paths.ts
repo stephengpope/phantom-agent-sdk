@@ -6,6 +6,9 @@ import path from 'node:path';
 
 export interface Paths {
   root: string;
+  /** The mirrors: one bare clone per project, the only thing that clones
+   *  from GitHub (git/Git.ts, the mirror section). */
+  poolMirror: string;
   poolSetup: string;
   poolReady: string;
   work: string;
@@ -14,6 +17,7 @@ export interface Paths {
 export function makePaths(root: string): Paths {
   return {
     root,
+    poolMirror: path.join(root, 'pool', 'mirror'),
     poolSetup: path.join(root, 'pool', 'setup'),
     poolReady: path.join(root, 'pool', 'ready'),
     work: path.join(root, 'work'),
@@ -27,14 +31,13 @@ export function repoDir(paths: Paths, sessionId: string): string {
   return path.join(sessionDir(paths, sessionId), 'repo');
 }
 
-/** Slot names carry their own metadata: which PROJECT they serve (never just
- *  the repo — two organizations' projects on one repo each clone with their
- *  own token and never share a checkout), and — via the
- *  ULID — when they were stocked, so eviction needs no marker file. */
+/** Slot and mirror names say which PROJECT they serve (never just the repo
+ *  — two organizations' projects on one repo each clone with their own
+ *  token and never share a checkout) and which branch. A slot adds a ULID
+ *  so two can exist while one is being replaced. */
 export function slotPrefix(projectId: string, branch: string): string {
   return `${projectId}__${branch}__`;
 }
-export function slotUlid(slotName: string): string {
-  const i = slotName.lastIndexOf('__');
-  return slotName.slice(i + 2);
+export function mirrorDir(paths: Paths, projectId: string, branch: string): string {
+  return path.join(paths.poolMirror, `${projectId}__${branch}`);
 }

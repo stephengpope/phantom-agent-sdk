@@ -111,3 +111,37 @@ export async function listRepos(pat: string, maxPages = 10): Promise<ListReposRe
     return { ok: false, code: 'upstream_unreachable', message: `could not reach GitHub: ${(error as Error).message}` };
   }
 }
+
+// ── Where is a branch? ────────────────────────────────────────────────────────
+// The cheap question every freshness decision rests on (the pool's pass, a
+// session's start): the commit `owner/name`'s `branch` is at. One small REST
+// call instead of a git fetch's negotiation. Asked with the ETag of the
+// last answer: an unchanged branch comes back 304 — no body, and GitHub
+// does not count it against the rate limit — so asking often costs nothing.
+
+const branchHeads = new Map<string, { etag: string; sha: string }>();
+
+/** The commit `branch` is at on GitHub, or null when GitHub did not answer
+ *  (unreachable, rate-limited, no such branch, a bad token) — the caller
+ *  then falls back to git, which fails or succeeds in its own words. */
+export async function branchHead(pat: string | undefined, owner: string, name: string, branch: string): Promise<string | null> {
+  const key = `${owner}/${name}#${branch}`;
+  const known = branchHeads.get(key);
+  const requestHeaders: Record<string, string> = {
+    accept: 'application/vnd.github+json', 'user-agent': 'phantom-looper',
+    ...(pat ? { authorization: `Bearer ${pat}` } : {}),
+    ...(known ? { 'if-none-match': known.etag } : {}),
+  };
+  try {
+    const res = await fetch(`${apiBase()}/repos/${owner}/${name}/git/ref/heads/${encodeURIComponent(branch)}`, { headers: requestHeaders });
+    if (res.status === 304 && known) return known.sha;
+    if (!res.ok) return null;
+    const sha = String(((await res.json()) as { object?: { sha?: string } }).object?.sha ?? '');
+    if (!sha) return null;
+    const etag = res.headers.get('etag');
+    if (etag) branchHeads.set(key, { etag, sha });
+    return sha;
+  } catch {
+    return null;
+  }
+}

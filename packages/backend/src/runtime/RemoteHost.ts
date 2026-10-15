@@ -140,7 +140,7 @@ export class RemoteHost implements WorkspaceHost {
 
   // ── the checkout ──────────────────────────────────────────────────────
 
-  checkout(workspaceId: string, projectId: string, branch: string, auth: GitAuth): Promise<'claimed' | 'cloned'> {
+  checkout(workspaceId: string, projectId: string, branch: string, auth: GitAuth): Promise<{ claimed: boolean; head: string }> {
     return this.#call({ type: 'checkout', workspaceId, projectId, branch, auth });
   }
   removeFiles(workspaceId: string): Promise<void> { return this.#call({ type: 'removeFiles', workspaceId }); }

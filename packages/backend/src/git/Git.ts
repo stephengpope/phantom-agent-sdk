@@ -55,14 +55,31 @@ export function guards(auth: GitAuth): string[] {
     // https form the helper above answers — the same host, the same token.
     '-c', 'url.https://github.com/.insteadOf=git@github.com:',
     '-c', 'url.https://github.com/.insteadOf=ssh://git@github.com/',
+    // A transfer that stalls (under 1 KB/s for a minute) fails instead of
+    // hanging: a stuck fetch would otherwise hold the pool's pass, or a
+    // session's start, until the hard cap below.
+    '-c', 'http.lowSpeedLimit=1000',
+    '-c', 'http.lowSpeedTime=60',
   ];
 }
 
+/** The hard cap on any one git command. Generous — a first clone of a large
+ *  repository is legitimately slow — and only a backstop: a stalled network
+ *  transfer fails on the low-speed guard long before this. */
+const GIT_TIMEOUT_MS = 30 * 60_000;
+
+/** The environment of every git command the SYSTEM runs. The identity
+ *  rides here, not in any repository's config: a checkout, each of its
+ *  submodules, a mirror and a scratch repo are separate repositories with
+ *  separate configs, and a commit in one that was not configured dies with
+ *  "Author identity unknown" — which is what a submodule commit did. */
 export function gitEnv(pat?: string): NodeJS.ProcessEnv {
   return {
     ...process.env,
     GITHUB_PAT: pat ?? '',
     GIT_TERMINAL_PROMPT: '0', // never hang a background child on a TTY prompt
+    GIT_AUTHOR_NAME: 'phantom-looper', GIT_AUTHOR_EMAIL: 'agent@phantom-looper.local',
+    GIT_COMMITTER_NAME: 'phantom-looper', GIT_COMMITTER_EMAIL: 'agent@phantom-looper.local',
   };
 }
 
@@ -86,10 +103,9 @@ function cleanThrow(error: unknown): never {
 export async function git(
   cwd: string, args: string[], auth?: GitAuth,
 ): Promise<{ stdout: string; stderr: string }> {
-  if (!auth) return exec('git', args, { cwd, maxBuffer: 32 * 1024 * 1024 }).catch(cleanThrow);
-  return exec('git', [...guards(auth), ...args], {
-    cwd, maxBuffer: 32 * 1024 * 1024, env: gitEnv(auth.pat),
-  }).catch(cleanThrow);
+  const limits = { maxBuffer: 32 * 1024 * 1024, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' as const, env: gitEnv(auth?.pat) };
+  if (!auth) return exec('git', args, { cwd, ...limits }).catch(cleanThrow);
+  return exec('git', [...guards(auth), ...args], { cwd, ...limits }).catch(cleanThrow);
 }
 
 /** A checkout on this filesystem as a Repo. */
@@ -135,28 +151,56 @@ export function classifyGitFailure(error: unknown, opts: { hadToken?: boolean } 
   return null;
 }
 
-/** A brand-new checkout at `dir`, on `branch`, ready to be worked in.
- *
- *  ONE clone recipe, for a new session, a restarted one and a spare alike:
- *  the whole commit history, none of the past file contents
- *  (--filter=blob:none). Every ancestry question the system asks
- *  (merge-base, is-ancestor, behind/ahead) is answered from commits alone,
- *  so it is always answerable — however long ago a branch left base. A
- *  --depth clone cut the history itself, and a branch older than the cut had
- *  no split point to find. The files of the checked-out commit are fetched
- *  here; a past version is fetched by git at the moment a command reads it,
- *  which is why every checkout/reset below carries `auth`.
- *
- *  --single-branch keeps the fetch refspec to this one branch; a session's
- *  own branch is added to it when the session is checked out. */
-export async function cloneFresh(dir: string, auth: GitAuth, branch: string): Promise<void> {
+// ── The mirror ────────────────────────────────────────────────────────────────
+// One bare copy of a project's base branch per host (runtime/CheckoutPool.ts)
+// is the ONLY thing that clones from GitHub. Every checkout — a spare, a
+// session's — is made FROM it, on local disk: git hard-links the object
+// files, so the copy takes milliseconds and the history is stored once. A
+// whole clone (every commit, every past file), so no checkout ever reaches
+// for GitHub to read its own history: a `git show HEAD~3:file` inside the
+// session container — where there is no token — works. Every ancestry
+// question (merge-base, is-ancestor) is answerable however long ago a
+// branch left base; a --depth clone would have cut the split point away.
+
+/** The mirror at `dir`: a bare, single-branch clone of `branch`. */
+export async function cloneMirror(dir: string, auth: GitAuth, branch: string): Promise<void> {
   await fs.rm(dir, { recursive: true, force: true });
   await fs.mkdir(path.dirname(dir), { recursive: true });
-  await exec('git', [...guards(auth), 'clone', '--filter=blob:none', '--single-branch', '--branch', branch, auth.url, dir], {
-    maxBuffer: 32 * 1024 * 1024, env: gitEnv(auth.pat),
-  }).catch(cleanThrow);
-  await git(dir, ['config', 'user.name', 'phantom-looper']);
-  await git(dir, ['config', 'user.email', 'agent@phantom-looper.local']);
+  await exec('git', [...guards(auth), 'clone', '--bare', '--single-branch', '--branch', branch, auth.url, dir],
+    { maxBuffer: 32 * 1024 * 1024, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', env: gitEnv(auth.pat) }).catch(cleanThrow);
+}
+
+/** The mirror's `branch` brought exactly to GitHub's. */
+export async function fetchMirror(dir: string, auth: GitAuth, branch: string): Promise<void> {
+  await git(dir, ['fetch', 'origin', `+refs/heads/${branch}:refs/heads/${branch}`], auth);
+}
+
+/** The commit a repository's `branch` is at (a mirror's, or a checkout's
+ *  `origin/<branch>`). */
+export async function headOf(dir: string, ref: string): Promise<string> {
+  return (await git(dir, ['rev-parse', ref])).stdout.trim();
+}
+
+/** A working checkout at `dir` on `branch`, copied from `mirror` — no
+ *  network. `origin` is then pointed at GitHub, so the checkout's own git
+ *  (the agent's, with credentials on) and every guarded call here speak to
+ *  the real remote; the mirror was only where the objects came from.
+ *  --single-branch keeps the fetch refspec to this one branch; a session's
+ *  own branch is added to it when the session is checked out. */
+export async function cloneFromMirror(mirror: string, dir: string, auth: GitAuth, branch: string): Promise<void> {
+  await fs.rm(dir, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(dir), { recursive: true });
+  await exec('git', ['clone', '--single-branch', '--branch', branch, mirror, dir],
+    { maxBuffer: 32 * 1024 * 1024, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL' }).catch(cleanThrow);
+  await git(dir, ['remote', 'set-url', 'origin', auth.url]);
+}
+
+/** A checkout KNOWN to hold nothing of its own brought exactly to the
+ *  mirror's `branch` — no network. Unguarded on purpose: a spare has never
+ *  been worked in, so there is nothing to weigh. */
+export async function syncFromMirror(dir: string, mirror: string, branch: string): Promise<void> {
+  await git(dir, ['fetch', mirror, `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  await git(dir, ['reset', '--hard', `origin/${branch}`]);
 }
 
 // ── Submodules ────────────────────────────────────────────────────────────────────────────
@@ -245,21 +289,13 @@ export async function fetchSubmodules(repo: Repo, auth: GitAuth): Promise<void> 
   await repo.git(['submodule', 'update', '--init', '--recursive', '--checkout'], auth);
 }
 
-/** Bring a checkout KNOWN to hold nothing of its own exactly up to the remote.
- *  Unguarded on purpose — pool slots have never been worked in, so there is
- *  nothing to weigh. Anything a session touched goes through the guarded path. */
-export async function refreshPristine(dir: string, auth: GitAuth, branch: string): Promise<void> {
-  await git(dir, ['fetch', 'origin', branch], auth);
-  await git(dir, ['reset', '--hard', `origin/${branch}`], auth);
-}
-
 /** Put `dir` on `branch`, starting from the remote's copy when there is one.
  *
- *  This is the ONE place a session's branch is chosen, and it makes the same
- *  decision for a brand-new session and a restarted one: fetch the branch; if
- *  origin has it, start exactly there. A brand-new session id cannot collide —
- *  the branch name IS the id — so 'existing' only ever means a deliberate
- *  restart, which is why resuming needs no extra state anywhere.
+ *  For a branch that MAY be on origin: a restart (the workspace remembers
+ *  it), or a session started under an id the caller chose. Fetch the
+ *  branch; if origin has it, start exactly there. A session whose id was
+ *  minted a moment ago has nothing to look up — the branch name IS the id
+ *  — and takes the plain `checkout -B` instead (Workspaces.obtain).
  *
  *  Only "no such ref" counts as absent. A network failure must NOT read as a
  *  new branch: that would start the session at base and orphan everything the
@@ -497,7 +533,7 @@ export async function rebaseAbort(repo: Repo): Promise<void> {
 /** Push the rebased branch. A rebase rewrites the branch, so this must force —
  *  and the lease names the expected value EXPLICITLY, read off the remote a
  *  moment before the push. The bare `--force-with-lease` form is wrong here:
- *  session clones are single-branch (cloneFresh), so the
+ *  session clones are single-branch (cloneFromMirror), so the
  *  fetch refspec never maps the session branch, no remote-tracking ref exists
  *  for it, and a bare lease then demands the remote branch NOT exist — it
  *  always does (the backup pushed it), so every push is rejected "stale
@@ -582,8 +618,6 @@ export async function initializeRemote(
   try {
     await exec('git', ['init', '-q', '-b', branch, tmp]);
     await fs.writeFile(path.join(tmp, 'README.md'), readme);
-    await git(tmp, ['config', 'user.name', 'phantom-looper']);
-    await git(tmp, ['config', 'user.email', 'agent@phantom-looper.local']);
     await git(tmp, ['add', '-A']);
     await git(tmp, ['commit', '--no-verify', '-q', '-m', 'Initial commit']);
     await git(tmp, ['push', '--no-verify', pushUrl, `HEAD:${branch}`], { ...auth, url: pushUrl });
