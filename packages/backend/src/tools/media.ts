@@ -9,6 +9,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import { Readable } from 'node:stream';
 import { scopeOf } from '../lib/scopes.js';
+import { acting } from '../lib/acting.js';
 import { workspaceOf } from '../storage/Sessions.js';
 import { MediaError, type MediaRow } from '../media/Media.js';
 import { int, obj, refusal, str, type OfferCtx, type ToolCtx, type ToolDef } from './def.js';
@@ -96,7 +97,9 @@ export const MEDIA_TOOLS: ToolDef[] = [
       if (!data) throw refusal('not_found', `no file at ${wanted}`);
       const row = await refusing(() => ctx.app.media.upload(Readable.from(data), {
         name: typeof a.name === 'string' && a.name.trim() ? a.name : path.basename(wanted), size: data.length,
-        owner: { organizationId: ctx.project.organizationId, projectId: ctx.project.id, sessionId: ctx.session.id },
+        // The user is whoever drives this turn (the same source as the
+        // session's last_turn_user_id); null for a cron or the operator.
+        owner: { organizationId: ctx.project.organizationId, projectId: ctx.project.id, sessionId: ctx.session.id, userId: acting()?.userId ?? null },
       }));
       return brief(row);
     },
