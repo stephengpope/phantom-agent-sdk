@@ -8,6 +8,7 @@
 // streams, detached commands, a watch) sends `chunk`s first and `end` last.
 // Bytes ride as base64. Ids are the backend's; a host that sees an id twice
 // (a reconnect re-sends what is unfinished) runs it once.
+import type { MediaUploadPlan } from '@phantom-agent-sdk/client';
 import type { ContainerPlan } from '../runtime/WorkspaceHost.js';
 import type { GitAuth } from '../git/Git.js';
 import type { RunOpts } from '../runtime/Sandbox.js';
@@ -20,6 +21,8 @@ export type Job = { id: string } & (
   | { type: 'exists'; workspaceId: string; rel: string }
   | { type: 'read'; workspaceId: string; rel: string }
   | { type: 'write'; workspaceId: string; rel: string; data: string }
+  /** The file straight to media storage on the backend's signed plan; answers MediaUploadSent. */
+  | { type: 'send'; workspaceId: string; rel: string; plan: MediaUploadPlan }
   | { type: 'tail'; workspaceId: string; rel: string; bytes: number }
   | { type: 'stat'; workspaceId: string; rel: string }
   | { type: 'list'; workspaceId: string; rel: string }

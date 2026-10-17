@@ -7,7 +7,8 @@
 // does — all of that arrives in the call (runtime/WorkspaceHost.ts).
 import type Docker from 'dockerode';
 import fs from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { createWriteStream, openAsBlob } from 'node:fs';
+import { sendToStorage, type MediaUploadPlan, type MediaUploadSent } from '@phantom-agent-sdk/client';
 import path from 'node:path';
 import type { ActiveContainer, ContainerPlan, ContainerState, DetachEvent, FileType, FileStat, Repo, WorkspaceFiles, WorkspaceHost } from './WorkspaceHost.js';
 import { Sandbox, DockerExec } from './Sandbox.js';
@@ -67,6 +68,8 @@ class LocalFiles implements WorkspaceFiles {
     try { return await fs.readFile(this.at(rel)); }
     catch (error) { if ((error as { code?: string }).code === 'ENOENT') return null; throw error; }
   }
+  /** A file-backed Blob: fetch streams it, so a part costs its own size at most. */
+  async send(rel: string, plan: MediaUploadPlan): Promise<MediaUploadSent> { return sendToStorage(await openAsBlob(this.at(rel)), plan); }
   async write(rel: string, data: Buffer): Promise<void> {
     const full = this.at(rel);
     await fs.mkdir(path.dirname(full), { recursive: true });
@@ -99,14 +102,16 @@ class LocalFiles implements WorkspaceFiles {
   }
   async mkdir(rel: string): Promise<void> { await fs.mkdir(this.at(rel), { recursive: true }); }
   async rm(rel: string): Promise<void> { await fs.rm(this.at(rel), { recursive: true, force: true }); }
-  async realFile(rel: string): Promise<string | null> {
-    let resolved: string; let realRoot: string;
+  async realFile(rel: string): Promise<{ path: string; size: number } | null> {
+    let resolved: string; let realRoot: string; let size: number;
     try {
       resolved = await fs.realpath(this.at(rel));
-      if (!(await fs.stat(resolved)).isFile()) return null;
+      const stat = await fs.stat(resolved);
+      if (!stat.isFile()) return null;
+      size = stat.size;
       realRoot = await fs.realpath(this.root);
     } catch { return null; }
-    return resolved === realRoot || resolved.startsWith(realRoot + path.sep) ? resolved : null;
+    return resolved === realRoot || resolved.startsWith(realRoot + path.sep) ? { path: resolved, size } : null;
   }
 }
 

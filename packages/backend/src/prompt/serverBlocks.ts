@@ -44,7 +44,7 @@ export const AGENT_DATABASE_SHARED = `${AGENT_DATABASE_WHAT} The database_query 
 // configured for its organization — the same rule that offers the media
 // tools. Facts only.
 
-export const MEDIA = `This project's organization keeps tracked media files (videos, images, audio, documents) in storage. The media_list tool lists them. The media_link tool gives a short-lived link to one file. The media_download tool copies one into /workspace/scratch. The media_upload tool keeps a file from /workspace as a new media file.`;
+export const MEDIA = `This project's organization keeps tracked media files (videos, images, audio, documents, text) in storage. The media_list tool lists them. The media_link tool gives a short-lived link to one file. The media_download tool copies one into /workspace/scratch. The media_upload tool keeps a file from /workspace as a new media file.`;
 
 // ═══ disk_limit ════════════════════════════════════════════════════════════════
 // Present only when container_disk_gb is set. {{gb}} is the limit.

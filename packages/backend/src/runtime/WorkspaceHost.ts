@@ -18,6 +18,7 @@
 // Paths: a host primitive takes a workspace id and a path RELATIVE to the
 // workspace's directory (work/<id>): `repo/...`, `scratch/...`, `logs/...`,
 // `web/...`. The host confines every path to that directory; `..` is refused.
+import type { MediaUploadPlan, MediaUploadSent } from '@phantom-agent-sdk/client';
 import type { PoolProject } from './CheckoutPool.js';
 import type { GitAuth } from '../git/Git.js';
 import type { Sandbox } from './Sandbox.js';
@@ -39,6 +40,10 @@ export interface FileStat { size: number; mtimeMs: number; type: FileType }
 export interface WorkspaceFiles {
   read(rel: string): Promise<Buffer | null>;
   write(rel: string, data: Buffer): Promise<void>;
+  /** The file straight to media storage on a plan the backend signed
+   *  (Media.createUpload) — the bytes never pass through the backend.
+   *  Answers what Media.complete needs. */
+  send(rel: string, plan: MediaUploadPlan): Promise<MediaUploadSent>;
   /** The last `bytes` of a file (a log's tail); empty when absent. */
   tail(rel: string, bytes: number): Promise<Buffer>;
   stat(rel: string): Promise<FileStat | null>;
@@ -46,9 +51,9 @@ export interface WorkspaceFiles {
   mkdir(rel: string): Promise<void>;
   rm(rel: string): Promise<void>;
   /** The real path of `rel` when it resolves to a regular file INSIDE the
-   *  workspace (symlinks followed), as the host sees it; null otherwise. For
-   *  the guards that refuse a link pointing out. */
-  realFile(rel: string): Promise<string | null>;
+   *  workspace (symlinks followed), as the host sees it, and its size; null
+   *  otherwise. For the guards that refuse a link pointing out. */
+  realFile(rel: string): Promise<{ path: string; size: number } | null>;
 }
 
 /** Everything a container creation needs, decided by the backend

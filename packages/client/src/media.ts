@@ -35,8 +35,30 @@ export type MediaUploadPlan =
 
 export interface MediaLink { id: string; url: string; expiresAt: string }
 
+/** What `complete` needs of a plan carried out: the parts' ETags for a multipart upload, nothing for a single PUT. */
+export type MediaUploadSent = { uploadId?: string; parts?: { partNumber: number; etag: string }[] };
+
 /** Parts in flight at once for a direct upload. */
 const PART_CONCURRENCY = 4;
+
+/** Carry an upload plan out: the file's bytes to storage, straight from
+ *  wherever the Blob is (a browser's File, a host's file-backed Blob), one
+ *  PUT or PART_CONCURRENCY parts at a time. Answers what `complete` needs. */
+export async function sendToStorage(file: Blob, plan: MediaUploadPlan, signal?: AbortSignal): Promise<MediaUploadSent> {
+  if (plan.mode === 'single') { await put(plan.url, file, plan.headers, signal); return {}; }
+  const { partSize, parts } = plan;
+  const etags: { partNumber: number; etag: string }[] = [];
+  let next = 0;
+  const worker = async () => {
+    for (let part = parts[next++]; part; part = parts[next++]) {
+      const start = (part.partNumber - 1) * partSize;
+      const etag = await put(part.url, file.slice(start, start + partSize), {}, signal);
+      etags.push({ partNumber: part.partNumber, etag });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, parts.length) }, worker));
+  return { uploadId: plan.uploadId, parts: etags };
+}
 
 const query = (params: Record<string, string | number | undefined>): string => {
   const entries = Object.entries(params).filter((entry): entry is [string, string | number] => entry[1] !== undefined);
@@ -87,22 +109,7 @@ export class Media {
     const started = await this.startUpload(declared);
     const uploadId = started.upload.mode === 'multipart' ? started.upload.uploadId : undefined;
     try {
-      if (started.upload.mode === 'single') {
-        await put(started.upload.url, file, started.upload.headers, signal);
-        return await this.complete(started.id, declared);
-      }
-      const { partSize, parts } = started.upload;
-      const etags: { partNumber: number; etag: string }[] = [];
-      let next = 0;
-      const worker = async () => {
-        for (let part = parts[next++]; part; part = parts[next++]) {
-          const start = (part.partNumber - 1) * partSize;
-          const etag = await put(part.url, file.slice(start, start + partSize), {}, signal);
-          etags.push({ partNumber: part.partNumber, etag });
-        }
-      };
-      await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, parts.length) }, worker));
-      return await this.complete(started.id, { ...declared, uploadId, parts: etags });
+      return await this.complete(started.id, { ...declared, ...(await sendToStorage(file, started.upload, signal)) });
     } catch (error) {
       await this.abandon(started.id, { organization: owner.organization, uploadId }).catch(() => {});
       throw error;
@@ -124,9 +131,19 @@ export class Media {
   }
 }
 
-/** One PUT to storage; answers its ETag. The bucket's CORS rule must expose ETag. */
+/** One PUT to storage; answers its ETag. The bucket's CORS rule must expose
+ *  ETag. A connection that fails (fetch's own TypeError — most often a
+ *  kept-alive socket the far end closed as this request reused it) is tried
+ *  once more: a Blob replays, and a PUT to one key is idempotent. Storage's
+ *  own answer (a 4xx/5xx) is never retried. */
 async function put(url: string, body: Blob, headers: Record<string, string>, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(url, { method: 'PUT', body, headers, signal });
+  let response: Response;
+  try {
+    response = await fetch(url, { method: 'PUT', body, headers, signal });
+  } catch (error) {
+    if (!(error instanceof TypeError) || signal?.aborted) throw error;
+    response = await fetch(url, { method: 'PUT', body, headers, signal });
+  }
   if (!response.ok) throw new Error(`storage refused the upload: HTTP ${response.status} ${(await response.text()).slice(0, 300)}`);
   return response.headers.get('etag') ?? '';
 }

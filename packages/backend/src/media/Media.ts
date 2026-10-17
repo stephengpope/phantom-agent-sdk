@@ -224,7 +224,7 @@ export class Media {
     const limits = await this.#limits(options.owner.organizationId);
     if (options.size !== undefined && options.size > limits.maxBytes) throw tooLarge(options.size, limits.maxBytes);
     const file = await this.#incoming(options.owner, newId(), options.name);
-    const mimeType = options.mimeType ?? 'application/octet-stream';
+    const mimeType = options.mimeType ?? UNKNOWN_TYPE;
     try {
       let counted = 0;
       const counter = new Transform({
@@ -274,7 +274,7 @@ export class Media {
     const limits = await this.#limits(options.owner.organizationId);
     if (!Number.isInteger(options.size) || options.size < 1) throw new MediaError('invalid_args', 'size must be the file\'s length in bytes');
     if (options.size > limits.maxBytes) throw tooLarge(options.size, limits.maxBytes);
-    if (!typeAllowed(options.mimeType, limits.allowed)) throw notAllowed(options.mimeType, limits.allowed);
+    if (!claimAllowed(options.mimeType, limits.allowed)) throw notAllowed(options.mimeType, limits.allowed);
     const file = await this.#incoming(options.owner, newId(), options.name);
     try {
       const client = await this.#client(file.storage);
@@ -308,7 +308,7 @@ export class Media {
     const limits = await this.#limits(options.owner.organizationId);
     if (!Number.isInteger(options.size) || options.size < 1) throw new MediaError('invalid_args', 'size must be the file\'s length in bytes');
     if (options.size > limits.maxBytes) throw tooLarge(options.size, limits.maxBytes);
-    if (!typeAllowed(options.mimeType, limits.allowed)) throw notAllowed(options.mimeType, limits.allowed);
+    if (!claimAllowed(options.mimeType, limits.allowed)) throw notAllowed(options.mimeType, limits.allowed);
     const file = await this.#incoming(options.owner, id, options.name);
     if (options.uploadId) {
       if (!options.parts?.length) throw new MediaError('invalid_args', 'a multipart upload completes with its parts: [{ partNumber, etag }]');
@@ -354,11 +354,12 @@ export class Media {
     if (expectedSize !== null && size !== expectedSize) throw new MediaError('invalid_args', `${file.name} arrived as ${size} bytes, not the ${expectedSize} declared`);
     if (size > limits.maxBytes) throw tooLarge(size, limits.maxBytes);
     if (size === 0) throw new MediaError('invalid_args', `${file.name} is empty`);
-    // Binary formats announce themselves in their first bytes. Text cannot:
-    // a text/* claim stands only when the bytes are text; anything else
-    // unrecognised is unknown binary.
+    // Binary formats announce themselves in their first bytes. Text cannot
+    // say which kind it is: text bytes are text/plain, or the uploader's
+    // text/* subtype (text/vtt, text/markdown) when it named one; anything
+    // else unrecognised is unknown binary.
     const detected = (await fileTypeFromBuffer(head))?.mime;
-    const mimeType = detected ?? (claimedType.startsWith('text/') && isText(head) ? claimedType : 'application/octet-stream');
+    const mimeType = detected ?? (isText(head) ? (claimedType.startsWith('text/') ? claimedType : 'text/plain') : UNKNOWN_TYPE);
     if (!typeAllowed(mimeType, limits.allowed)) throw notAllowed(mimeType, limits.allowed);
     const [row] = await this.database.insert(media).values({
       id: file.id, organizationId: file.organizationId, userId: owner.userId ?? null, projectId: owner.projectId ?? null, sessionId: owner.sessionId ?? null,
@@ -492,11 +493,20 @@ const tooLarge = (size: number, max: number) => new MediaError('too_large', `${s
 const notAllowed = (type: string, allowed: string[]) => new MediaError('type_not_allowed', `${type} files are not allowed (allowed: ${allowed.join(', ') || 'none'})`);
 
 /** UTF-8 with no NUL — text, as far as a first sample can tell (the sample
- *  may end mid-character: that last partial one is let through). */
+ *  may end mid-character: `stream` holds that last partial one back
+ *  instead of failing on it). */
 function isText(sample: Uint8Array): boolean {
   if (sample.includes(0)) return false;
-  try { new TextDecoder('utf-8', { fatal: true }).decode(sample.subarray(0, Math.max(0, sample.length - 3))); return true; } catch { return false; }
+  try { new TextDecoder('utf-8', { fatal: true }).decode(sample, { stream: true }); return true; } catch { return false; }
 }
+
+/** The uploader does not know the type: nothing to refuse early; the bytes decide at #record. */
+const UNKNOWN_TYPE = 'application/octet-stream';
+
+/** A claim the uploader made, before the bytes: refused early only when it
+ *  names a type that is not allowed — a courtesy that fails a large
+ *  disallowed upload before it starts. An unknown claim passes to the bytes. */
+const claimAllowed = (type: string, allowed: string[]): boolean => type.toLowerCase() === UNKNOWN_TYPE || typeAllowed(type, allowed);
 
 /** `image/png` against `image/*`, `application/pdf`. */
 export function typeAllowed(type: string, allowed: string[]): boolean {

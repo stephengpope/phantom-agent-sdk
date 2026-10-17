@@ -2,8 +2,9 @@
 // the project's organization's tracked files (media/Media.ts). Offered when
 // agent_media is on for the project and media is configured for its
 // organization. The agent never holds a
-// storage key: a link is short-lived, and downloads and uploads run here,
-// between the bucket and the session's /workspace.
+// storage key: a link is short-lived. A download runs here, between the
+// bucket and the session's /workspace; an upload of a workspace file goes
+// from its host straight to the bucket on a plan signed here.
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -11,7 +12,8 @@ import { Readable } from 'node:stream';
 import { scopeOf } from '../lib/scopes.js';
 import { acting } from '../lib/acting.js';
 import { workspaceOf } from '../storage/Sessions.js';
-import { MediaError, type MediaRow } from '../media/Media.js';
+import { MediaError, type MediaOwner, type MediaRow } from '../media/Media.js';
+import { publicFetch } from '../lib/publicFetch.js';
 import { int, obj, refusal, str, type OfferCtx, type ToolCtx, type ToolDef } from './def.js';
 
 const CONTAINER_ROOT = '/workspace';
@@ -30,6 +32,64 @@ async function refusing<T>(work: () => Promise<T>): Promise<T> {
     if (error instanceof MediaError) throw refusal(error.code, error.message);
     throw error;
   }
+}
+
+/** What the agent said about the file, settled: the name people see and a type claim (the bytes decide the real one). */
+interface Claim { name: string | undefined; mimeType: string | undefined; owner: MediaOwner }
+
+const claimOf = (ctx: ToolCtx, a: Record<string, unknown>): Claim => ({
+  name: typeof a.name === 'string' && a.name.trim() ? a.name.trim() : undefined,
+  mimeType: typeof a.type === 'string' && a.type.trim() ? a.type.trim() : undefined,
+  // The user is whoever drives this turn (the same source as the
+  // session's last_turn_user_id); null for a cron or the operator.
+  owner: { organizationId: ctx.project.organizationId, projectId: ctx.project.id, sessionId: ctx.session.id, userId: acting()?.userId ?? null },
+});
+
+/** A workspace file goes from its host STRAIGHT to storage, as a browser's
+ *  does: this server signs the plan (createUpload), the host PUTs the bytes
+ *  on it, this server checks the object and records it (complete). The
+ *  bytes never pass through here. */
+async function uploadFromWorkspace(ctx: ToolCtx, given: unknown, claim: Claim): Promise<MediaRow> {
+  if (typeof given !== 'string' || !given.trim()) throw refusal('invalid_args', 'give path (a file under /workspace) or url');
+  const wanted = path.posix.normalize(given);
+  if (wanted !== CONTAINER_ROOT && !wanted.startsWith(`${CONTAINER_ROOT}/`)) throw refusal('invalid_args', `path must be under ${CONTAINER_ROOT}`);
+  const rel = wanted.slice(CONTAINER_ROOT.length + 1);
+  const files = await filesOf(ctx);
+  // The real file must still be inside the workspace once links are followed.
+  const real = rel ? await files.realFile(rel) : null;
+  if (!real) throw refusal('not_found', `no file at ${wanted}`);
+  const declared = { name: claim.name ?? path.basename(wanted), size: real.size, mimeType: claim.mimeType ?? 'application/octet-stream', owner: claim.owner };
+  const started = await refusing(() => ctx.app.media.createUpload(declared));
+  const uploadId = started.upload.mode === 'multipart' ? started.upload.uploadId : undefined;
+  try {
+    const sent = await files.send(rel, started.upload).catch((error: Error) => { throw refusal('storage_failed', `could not send ${wanted} to storage: ${error.message}`); });
+    return await refusing(() => ctx.app.media.complete(started.id, { ...declared, ...sent }));
+  } catch (error) {
+    await ctx.app.media.abandon(started.id, { owner: claim.owner, uploadId }).catch(() => {});
+    throw error;
+  }
+}
+
+/** A URL's body streams through this server into storage — public
+ *  addresses only (lib/publicFetch.ts); the size limit is enforced as the
+ *  bytes flow. */
+async function uploadFromUrl(ctx: ToolCtx, url: string, claim: Claim): Promise<MediaRow> {
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw refusal('invalid_args', `${url} is not a URL`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw refusal('invalid_args', 'url must be http or https');
+  let response: Response;
+  try { response = await publicFetch(parsed.href); } catch (error) {
+    throw refusal('fetch_failed', `could not fetch ${url}: ${(error as { cause?: { message?: string } }).cause?.message ?? (error as Error).message}`);
+  }
+  if (!response.ok || !response.body) throw refusal('fetch_failed', `${url} answered HTTP ${response.status}`);
+  // content-length is the wire size; with content-encoding the decoded body is bigger, so it is no hint then.
+  const length = response.headers.has('content-encoding') ? NaN : Number(response.headers.get('content-length'));
+  const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  const last = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() ?? '');
+  return refusing(() => ctx.app.media.upload(Readable.fromWeb(response.body as import('node:stream/web').ReadableStream), {
+    name: claim.name ?? (last || parsed.hostname), owner: claim.owner,
+    ...(Number.isFinite(length) && length > 0 ? { size: length } : {}), ...(claim.mimeType ?? type ? { mimeType: claim.mimeType ?? type } : {}),
+  }));
 }
 
 export const MEDIA_TOOLS: ToolDef[] = [
@@ -81,27 +141,18 @@ export const MEDIA_TOOLS: ToolDef[] = [
   },
   {
     name: 'media_upload',
-    summary: 'Keep a file from /workspace as a tracked media file.',
-    description: 'Uploads a file you made (a rendered video, an image, a report) to media storage as this project\'s organization\'s file, ' +
-      'and answers its id. Only file types the media settings allow are kept. Re-encode video for streaming first: ffmpeg … -movflags +faststart.',
-    input: obj({ path: str('the file, under /workspace'), name: str('the name people see; default the file\'s own') }, ['path']),
+    summary: 'Keep a file from /workspace, or one at a public URL, as a tracked media file.',
+    description: 'Uploads a file you made (a rendered video, an image, a transcript, captions, a report) to media storage as this project\'s organization\'s file, ' +
+      'and answers its id. Give `path` for a file under /workspace, or `url` for one on the public internet — it streams straight into storage, never through /workspace. ' +
+      'The type is read from the bytes; a text file is text/plain unless `type` (or the URL\'s content-type) names a text/* subtype. ' +
+      'Only file types the media settings allow are kept. Re-encode video for streaming first: ffmpeg … -movflags +faststart.',
+    input: obj({ path: str('the file, under /workspace'), url: str('instead of path: a public http(s) URL to take the file from'),
+      name: str('the name people see; default the file\'s own'),
+      type: str('for a text file, its text/* subtype (text/vtt, text/markdown, text/csv); default text/plain') }),
     mutates: true, group: 'media', offered: withFiles,
     async execute(ctx, a) {
-      const wanted = path.posix.normalize(String(a.path));
-      if (wanted !== CONTAINER_ROOT && !wanted.startsWith(`${CONTAINER_ROOT}/`)) throw refusal('invalid_args', `path must be under ${CONTAINER_ROOT}`);
-      const rel = wanted.slice(CONTAINER_ROOT.length + 1);
-      const files = await filesOf(ctx);
-      // The real file must still be inside the workspace once links are followed.
-      if (!rel || !(await files.realFile(rel))) throw refusal('not_found', `no file at ${wanted}`);
-      const data = await files.read(rel);
-      if (!data) throw refusal('not_found', `no file at ${wanted}`);
-      const row = await refusing(() => ctx.app.media.upload(Readable.from(data), {
-        name: typeof a.name === 'string' && a.name.trim() ? a.name : path.basename(wanted), size: data.length,
-        // The user is whoever drives this turn (the same source as the
-        // session's last_turn_user_id); null for a cron or the operator.
-        owner: { organizationId: ctx.project.organizationId, projectId: ctx.project.id, sessionId: ctx.session.id, userId: acting()?.userId ?? null },
-      }));
-      return brief(row);
+      const claim = claimOf(ctx, a);
+      return brief(typeof a.url === 'string' && a.url.trim() ? await uploadFromUrl(ctx, a.url.trim(), claim) : await uploadFromWorkspace(ctx, a.path, claim));
     },
   },
 ];

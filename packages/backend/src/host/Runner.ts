@@ -265,6 +265,7 @@ export class Runner {
       case 'exists': return result(await local.repo(job.workspaceId).exists(job.rel));
       case 'read': { const got = await local.files(job.workspaceId).read(job.rel); return result(got === null ? null : toBase64(got)); }
       case 'write': await local.files(job.workspaceId).write(job.rel, fromBase64(job.data)); return result(null);
+      case 'send': return result(await local.files(job.workspaceId).send(job.rel, job.plan));
       case 'tail': return result(toBase64(await local.files(job.workspaceId).tail(job.rel, job.bytes)));
       case 'stat': return result(await local.files(job.workspaceId).stat(job.rel));
       case 'list': return result(await local.files(job.workspaceId).list(job.rel));

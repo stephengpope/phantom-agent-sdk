@@ -16,7 +16,7 @@ import type { ActiveContainer, ContainerPlan, ContainerState, DetachEvent, FileT
 import { Sandbox, type Exec, type RunOpts, type RunResult, type StreamRecord } from './Sandbox.js';
 import type { GitAuth } from '../git/Git.js';
 import type { PoolProject } from './CheckoutPool.js';
-import type { UpdateEvent } from '@phantom-agent-sdk/client';
+import type { MediaUploadSent, UpdateEvent } from '@phantom-agent-sdk/client';
 import { type HostLoad, type Job, type JobBody, type JobEvent, type TurnJobResult, decodeError, encodeRunOpts, fromBase64, toBase64 } from '../host/protocol.js';
 import { logger } from '../lib/log.js';
 
@@ -157,12 +157,13 @@ export class RemoteHost implements WorkspaceHost {
     return {
       read: async (rel) => { const got = await call<string | null>({ type: 'read', workspaceId, rel }); return got === null ? null : fromBase64(got); },
       write: (rel, data) => call({ type: 'write', workspaceId, rel, data: toBase64(data) }),
+      send: (rel, plan) => call<MediaUploadSent>({ type: 'send', workspaceId, rel, plan }),
       tail: async (rel, bytes) => fromBase64(await call<string>({ type: 'tail', workspaceId, rel, bytes })),
       stat: (rel) => call<FileStat | null>({ type: 'stat', workspaceId, rel }),
       list: (rel) => call<Array<{ name: string; type: FileType }> | null>({ type: 'list', workspaceId, rel }),
       mkdir: (rel) => call({ type: 'mkdir', workspaceId, rel }),
       rm: (rel) => call({ type: 'rm', workspaceId, rel }),
-      realFile: (rel) => call<string | null>({ type: 'realFile', workspaceId, rel }),
+      realFile: (rel) => call<{ path: string; size: number } | null>({ type: 'realFile', workspaceId, rel }),
     };
   }
 
