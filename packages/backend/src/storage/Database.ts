@@ -227,18 +227,16 @@ function actingPool(pool: pg.Pool): pg.Pool {
   });
 }
 
-/** Every table, view, sequence and function in `schema` owned by one of
- *  `from` becomes `to`'s. Objects owned by anyone else are not touched. */
+/** Every table, view and function in `schema` owned by one of `from`
+ *  becomes `to`'s (a serial's sequence follows its table and may not be
+ *  re-owned on its own). Objects owned by anyone else are not touched. */
 async function reassignOwned(superuser: pg.Client, schema: string, from: string[], to: string): Promise<void> {
   const owner = quoteIdent(to);
-  const { rows: relations } = await superuser.query<{ relname: string; relkind: string }>(
-    `select c.relname, c.relkind from pg_class c join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = $1 and c.relkind in ('r', 'p', 'v', 'm', 'S') and pg_get_userbyid(c.relowner) = any($2)`,
+  const { rows: relations } = await superuser.query<{ relname: string }>(
+    `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relkind in ('r', 'p', 'v', 'm') and pg_get_userbyid(c.relowner) = any($2)`,
     [schema, from]);
-  for (const { relname, relkind } of relations) {
-    const kind = relkind === 'S' ? 'sequence' : 'table';
-    await superuser.query(`alter ${kind} ${quoteIdent(schema)}.${quoteIdent(relname)} owner to ${owner}`);
-  }
+  for (const { relname } of relations) await superuser.query(`alter table ${quoteIdent(schema)}.${quoteIdent(relname)} owner to ${owner}`);
   const { rows: functions } = await superuser.query<{ signature: string }>(
     `select p.oid::regprocedure::text as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
       where n.nspname = $1 and pg_get_userbyid(p.proowner) = any($2)`,
