@@ -22,6 +22,15 @@ const json = customType<{ data: unknown; driverData: unknown }>({
   fromDriver: (value) => value,
 });
 
+// numeric(p,s): exact in the database, a number here — pg hands numeric over
+// as a string so no precision is lost on the wire; our scales (3 decimals)
+// fit a double exactly enough for anything that reads a duration or a frame rate.
+const decimal = (precision: number, scale: number) => customType<{ data: number; driverData: string }>({
+  dataType: () => `numeric(${precision},${scale})`,
+  toDriver: (value) => String(value),
+  fromDriver: (value) => Number(value),
+});
+
 export const phantomAgentSdk = pgSchema('phantom_agent_sdk');
 
 // ONE store for settings and secrets — a row is (scope, namespace, key).
@@ -358,6 +367,24 @@ export const media = phantomAgentSdk.table('media', {
   endpoint: text('endpoint').notNull(),
   bucket: text('bucket').notNull(),
   key: text('key').notNull(),
+  // The file's technical facts (068), read once with ffprobe as it lands
+  // (media/probe.ts); all null for a file ffprobe cannot read.
+  width: integer('width'),
+  height: integer('height'),
+  durationSeconds: decimal(12, 3)('duration_seconds'),
+  frameRate: decimal(8, 3)('frame_rate'),
+  frameCount: integer('frame_count'),
+  aspectRatio: text('aspect_ratio'),
+  orientation: text('orientation'),
+  bitRate: bigint('bit_rate', { mode: 'number' }),
+  videoCodec: text('video_codec'),
+  audioCodec: text('audio_codec'),
+  audioChannels: integer('audio_channels'),
+  audioSampleRate: integer('audio_sample_rate'),
+  hasAudio: boolean('has_audio'),
+  pixelFormat: text('pixel_format'),
+  container: text('container'),
+  probe: json('probe'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

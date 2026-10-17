@@ -47,6 +47,7 @@ import type { Settings } from '../storage/Settings.js';
 import { media, type MediaRow } from '../storage/schema.js';
 import { logger, errStr } from '../lib/log.js';
 import { SERVICE_ROLE_ORGANIZATION } from '../lib/scopes.js';
+import { probeMedia, NO_FACTS } from './probe.js';
 
 export type { MediaRow };
 
@@ -83,6 +84,10 @@ const UPLOAD_URL_SECONDS = 3600;
 const SNIFF_BYTES = 4100;
 /** Types a browser may show in place; anything else downloads. */
 const INLINE = /^(image\/(?!svg)|video\/|audio\/|application\/pdf$)/;
+/** Types ffprobe is asked about; a PDF or text gets no facts without the call. */
+const PROBABLE = /^(image|video|audio)\//;
+/** How long the probe's own link lives — the probe's timeout and change. */
+const PROBE_LINK_SECONDS = 60;
 
 interface Storage { endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string }
 /** A file on its way in: where its bytes go, before any row exists. */
@@ -361,11 +366,16 @@ export class Media {
     const detected = (await fileTypeFromBuffer(head))?.mime;
     const mimeType = detected ?? (isText(head) ? (claimedType.startsWith('text/') ? claimedType : 'text/plain') : UNKNOWN_TYPE);
     if (!typeAllowed(mimeType, limits.allowed)) throw notAllowed(mimeType, limits.allowed);
+    // The file's technical facts, read off the object through a link of its
+    // own (media/probe.ts) — only for what ffprobe could have an opinion on.
+    const facts = PROBABLE.test(mimeType)
+      ? await probeMedia(await getSignedUrl(client, new GetObjectCommand({ Bucket: file.storage.bucket, Key: file.key }), { expiresIn: PROBE_LINK_SECONDS }), size)
+      : NO_FACTS;
     const [row] = await this.database.insert(media).values({
       id: file.id, organizationId: file.organizationId, userId: owner.userId ?? null, projectId: owner.projectId ?? null, sessionId: owner.sessionId ?? null,
-      name: file.name, mimeType, size, endpoint: file.storage.endpoint, bucket: file.storage.bucket, key: file.key,
+      name: file.name, mimeType, size, endpoint: file.storage.endpoint, bucket: file.storage.bucket, key: file.key, ...facts,
     }).returning();
-    log.info({ media: row.id, size, mimeType }, 'media ready');
+    log.info({ media: row.id, size, mimeType, probed: facts !== NO_FACTS }, 'media ready');
     return row;
   }
 

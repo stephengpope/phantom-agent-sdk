@@ -22,6 +22,26 @@ export interface MediaFile {
   endpoint: string;
   bucket: string;
   key: string;
+  /** The file's technical facts, read once with ffprobe as it landed; all null for a file ffprobe could not read (a PDF, text). */
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+  frameRate: number | null;
+  frameCount: number | null;
+  /** `16:9`, `9:16`, `1:1`. */
+  aspectRatio: string | null;
+  orientation: 'landscape' | 'portrait' | 'square' | null;
+  bitRate: number | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  audioChannels: number | null;
+  audioSampleRate: number | null;
+  hasAudio: boolean | null;
+  pixelFormat: string | null;
+  /** The container as ffprobe names it: `mov`, `matroska`, `mp3`, `png_pipe`. */
+  container: string | null;
+  /** ffprobe's whole answer. */
+  probe: unknown;
   createdAt: string;
   updatedAt: string;
 }

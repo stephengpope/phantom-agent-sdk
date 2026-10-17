@@ -24,7 +24,15 @@ const withFiles = async (ctx: OfferCtx) => Boolean(ctx.session.workspaceId) && a
 /** The session's workspace, on its host. */
 const filesOf = async (ctx: ToolCtx) => { const id = workspaceOf(ctx.session); return (await ctx.app.runners.of(id)).files(id); };
 
-const brief = (row: MediaRow) => ({ id: row.id, name: row.name, type: row.mimeType, size: row.size, created_at: row.createdAt.toISOString() });
+/** A row for the model: identity, then the technical facts that are known (nulls dropped; the raw probe stays in the database). */
+const brief = (row: MediaRow) => ({
+  id: row.id, name: row.name, type: row.mimeType, size: row.size, created_at: row.createdAt.toISOString(),
+  ...Object.fromEntries(Object.entries({
+    width: row.width, height: row.height, duration_seconds: row.durationSeconds, frame_rate: row.frameRate, frame_count: row.frameCount,
+    aspect_ratio: row.aspectRatio, orientation: row.orientation, bit_rate: row.bitRate, video_codec: row.videoCodec, audio_codec: row.audioCodec,
+    audio_channels: row.audioChannels, audio_sample_rate: row.audioSampleRate, has_audio: row.hasAudio, pixel_format: row.pixelFormat, container: row.container,
+  }).filter(([, value]) => value !== null)),
+});
 
 /** A MediaError as the refusal the model reads; anything else is a bug and throws on. */
 async function refusing<T>(work: () => Promise<T>): Promise<T> {
