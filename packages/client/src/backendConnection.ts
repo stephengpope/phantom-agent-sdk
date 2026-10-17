@@ -60,6 +60,9 @@ export class BackendConnection {
     // of the server forwards an empty chunked body, which the server reads
     // as a body with no content type (415) — proven on turn-ended.
     if (body === undefined || body === null) headers['content-length'] = 0;
+    // A Blob knows its length: say it, so the server can refuse a file over
+    // its limit before a byte moves.
+    else if (body instanceof Blob) headers['content-length'] = body.size;
     const req = this.#connect().request(headers);
     const signal = init?.signal;
 
@@ -95,7 +98,13 @@ export class BackendConnection {
       });
       if (body === undefined || body === null) req.end();
       else if (typeof body === 'string' || body instanceof Uint8Array) req.end(body);
-      else { answered = true; req.close(http2.constants.NGHTTP2_CANCEL); reject(new TypeError('BackendConnection: only string or bytes bodies are supported')); }
+      // A Blob (a file opened with fs.openAsBlob) or a stream is piped: read
+      // as the far end takes it, never held whole — a dropped file of any
+      // size costs no memory here.
+      else if (body instanceof Blob || body instanceof ReadableStream) {
+        Readable.fromWeb((body instanceof Blob ? body.stream() : body) as import('node:stream/web').ReadableStream)
+          .on('error', failed).pipe(req);
+      } else { answered = true; req.close(http2.constants.NGHTTP2_CANCEL); reject(new TypeError('BackendConnection: only string, bytes, Blob or stream bodies are supported')); }
     });
   }
 }
