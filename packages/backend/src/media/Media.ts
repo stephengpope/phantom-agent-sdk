@@ -58,12 +58,18 @@ export class MediaError extends Error {
     | 'storage_changed' | 'storage_failed', message: string) { super(message); this.name = 'MediaError'; }
 }
 
-/** Who a file belongs to. `organizationId` null = the service role's (SERVICE_ROLE_ORGANIZATION). */
+/** How a file came to be — what an app's own keep-or-clean rule turns on:
+ *  a dropped attachment (cli, Telegram), the agent's own upload, a URL it
+ *  fetched, a browser's direct upload, a call to the API. */
+export type MediaSource = 'attachment' | 'agent' | 'url' | 'browser' | 'api';
+
+/** Who a file belongs to, and why it exists. `organizationId` null = the service role's (SERVICE_ROLE_ORGANIZATION). */
 export interface MediaOwner {
   organizationId: string | null;
   userId?: string | null;
   projectId?: string | null;
   sessionId?: string | null;
+  source: MediaSource;
 }
 
 /** How a browser sends the bytes: one PUT, or one PUT per part. */
@@ -373,7 +379,7 @@ export class Media {
       : NO_FACTS;
     const [row] = await this.database.insert(media).values({
       id: file.id, organizationId: file.organizationId, userId: owner.userId ?? null, projectId: owner.projectId ?? null, sessionId: owner.sessionId ?? null,
-      name: file.name, mimeType, size, endpoint: file.storage.endpoint, bucket: file.storage.bucket, key: file.key, ...facts,
+      name: file.name, mimeType, size, source: owner.source, endpoint: file.storage.endpoint, bucket: file.storage.bucket, key: file.key, ...facts,
     }).returning();
     log.info({ media: row.id, size, mimeType, probed: facts !== NO_FACTS }, 'media ready');
     return row;
@@ -517,6 +523,17 @@ const UNKNOWN_TYPE = 'application/octet-stream';
  *  names a type that is not allowed — a courtesy that fails a large
  *  disallowed upload before it starts. An unknown claim passes to the bytes. */
 const claimAllowed = (type: string, allowed: string[]): boolean => type.toLowerCase() === UNKNOWN_TYPE || typeAllowed(type, allowed);
+
+/** A row's technical facts (068) for a caller, snake_case, the unknown ones
+ *  left out; the raw probe stays in the row. */
+export function mediaFacts(row: MediaRow): Record<string, number | string | boolean> {
+  const facts = {
+    width: row.width, height: row.height, duration_seconds: row.durationSeconds, frame_rate: row.frameRate, frame_count: row.frameCount,
+    aspect_ratio: row.aspectRatio, orientation: row.orientation, bit_rate: row.bitRate, video_codec: row.videoCodec, audio_codec: row.audioCodec,
+    audio_channels: row.audioChannels, audio_sample_rate: row.audioSampleRate, has_audio: row.hasAudio, pixel_format: row.pixelFormat, container: row.container,
+  };
+  return Object.fromEntries(Object.entries(facts).filter((entry): entry is [string, number | string | boolean] => entry[1] !== null));
+}
 
 /** `image/png` against `image/*`, `application/pdf`. */
 export function typeAllowed(type: string, allowed: string[]): boolean {

@@ -12,7 +12,7 @@ import { Readable } from 'node:stream';
 import { scopeOf } from '../lib/scopes.js';
 import { acting } from '../lib/acting.js';
 import { workspaceOf } from '../storage/Sessions.js';
-import { MediaError, type MediaOwner, type MediaRow } from '../media/Media.js';
+import { MediaError, mediaFacts, type MediaOwner, type MediaRow, type MediaSource } from '../media/Media.js';
 import { publicFetch } from '../lib/publicFetch.js';
 import { int, obj, refusal, str, type OfferCtx, type ToolCtx, type ToolDef } from './def.js';
 
@@ -24,15 +24,8 @@ const withFiles = async (ctx: OfferCtx) => Boolean(ctx.session.workspaceId) && a
 /** The session's workspace, on its host. */
 const filesOf = async (ctx: ToolCtx) => { const id = workspaceOf(ctx.session); return (await ctx.app.runners.of(id)).files(id); };
 
-/** A row for the model: identity, then the technical facts that are known (nulls dropped; the raw probe stays in the database). */
-const brief = (row: MediaRow) => ({
-  id: row.id, name: row.name, type: row.mimeType, size: row.size, created_at: row.createdAt.toISOString(),
-  ...Object.fromEntries(Object.entries({
-    width: row.width, height: row.height, duration_seconds: row.durationSeconds, frame_rate: row.frameRate, frame_count: row.frameCount,
-    aspect_ratio: row.aspectRatio, orientation: row.orientation, bit_rate: row.bitRate, video_codec: row.videoCodec, audio_codec: row.audioCodec,
-    audio_channels: row.audioChannels, audio_sample_rate: row.audioSampleRate, has_audio: row.hasAudio, pixel_format: row.pixelFormat, container: row.container,
-  }).filter(([, value]) => value !== null)),
-});
+/** A row for the model: identity, then the technical facts that are known. */
+const brief = (row: MediaRow) => ({ id: row.id, name: row.name, type: row.mimeType, size: row.size, created_at: row.createdAt.toISOString(), ...mediaFacts(row) });
 
 /** A MediaError as the refusal the model reads; anything else is a bug and throws on. */
 async function refusing<T>(work: () => Promise<T>): Promise<T> {
@@ -45,12 +38,12 @@ async function refusing<T>(work: () => Promise<T>): Promise<T> {
 /** What the agent said about the file, settled: the name people see and a type claim (the bytes decide the real one). */
 interface Claim { name: string | undefined; mimeType: string | undefined; owner: MediaOwner }
 
-const claimOf = (ctx: ToolCtx, a: Record<string, unknown>): Claim => ({
+const claimOf = (ctx: ToolCtx, a: Record<string, unknown>, source: MediaSource): Claim => ({
   name: typeof a.name === 'string' && a.name.trim() ? a.name.trim() : undefined,
   mimeType: typeof a.type === 'string' && a.type.trim() ? a.type.trim() : undefined,
   // The user is whoever drives this turn (the same source as the
   // session's last_turn_user_id); null for a cron or the operator.
-  owner: { organizationId: ctx.project.organizationId, projectId: ctx.project.id, sessionId: ctx.session.id, userId: acting()?.userId ?? null },
+  owner: { organizationId: ctx.project.organizationId, projectId: ctx.project.id, sessionId: ctx.session.id, userId: acting()?.userId ?? null, source },
 });
 
 /** A workspace file goes from its host STRAIGHT to storage, as a browser's
@@ -159,8 +152,8 @@ export const MEDIA_TOOLS: ToolDef[] = [
       type: str('for a text file, its text/* subtype (text/vtt, text/markdown, text/csv); default text/plain') }),
     mutates: true, group: 'media', offered: withFiles,
     async execute(ctx, a) {
-      const claim = claimOf(ctx, a);
-      return brief(typeof a.url === 'string' && a.url.trim() ? await uploadFromUrl(ctx, a.url.trim(), claim) : await uploadFromWorkspace(ctx, a.path, claim));
+      const url = typeof a.url === 'string' ? a.url.trim() : '';
+      return brief(url ? await uploadFromUrl(ctx, url, claimOf(ctx, a, 'url')) : await uploadFromWorkspace(ctx, a.path, claimOf(ctx, a, 'agent')));
     },
   },
 ];

@@ -364,6 +364,8 @@ export const media = phantomAgentSdk.table('media', {
   name: text('name').notNull(),
   mimeType: text('mime_type').notNull(),
   size: bigint('size', { mode: 'number' }).notNull(),
+  /** How it came to be (069): attachment | agent | url | browser | api. Null for rows from before. */
+  source: text('source'),
   endpoint: text('endpoint').notNull(),
   bucket: text('bucket').notNull(),
   key: text('key').notNull(),

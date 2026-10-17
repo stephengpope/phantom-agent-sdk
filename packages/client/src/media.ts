@@ -19,6 +19,8 @@ export interface MediaFile {
   name: string;
   mimeType: string;
   size: number;
+  /** How it came to be: a dropped attachment, the agent's own upload, a URL it fetched, a browser's direct upload, a call to the API. Null for rows from before. */
+  source: 'attachment' | 'agent' | 'url' | 'browser' | 'api' | null;
   endpoint: string;
   bucket: string;
   key: string;

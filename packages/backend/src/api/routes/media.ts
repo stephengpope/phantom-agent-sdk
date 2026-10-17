@@ -15,7 +15,7 @@
 import type { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { ok, err } from '../HttpApi.js';
-import { MediaError } from '../../media/Media.js';
+import { MediaError, type MediaSource } from '../../media/Media.js';
 import type { PhantomBackend } from '../../PhantomBackend.js';
 
 const TAG = { tags: ['media'] };
@@ -37,7 +37,7 @@ function refuse(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
-const ownerOf = (query: OwnerQuery) => ({ organizationId: query.organization ?? null, projectId: query.project ?? null, userId: query.user ?? null });
+const ownerOf = (query: OwnerQuery, source: MediaSource) => ({ organizationId: query.organization ?? null, projectId: query.project ?? null, userId: query.user ?? null, source });
 
 export function mediaRoutes(app: FastifyInstance, backend: PhantomBackend) {
   // The bytes of POST /media arrive as a stream, handed over unread:
@@ -64,7 +64,7 @@ export function mediaRoutes(app: FastifyInstance, backend: PhantomBackend) {
     const length = Number(req.headers['content-length']);
     try {
       const row = await backend.media.upload(req.body as Readable, {
-        name: req.query.name, owner: ownerOf(req.query), mimeType: req.query.type,
+        name: req.query.name, owner: ownerOf(req.query, 'api'), mimeType: req.query.type,
         ...(Number.isFinite(length) && length > 0 ? { size: length } : {}), signal: aborted.signal,
       });
       return reply.code(201).send(ok(row));
@@ -77,7 +77,7 @@ export function mediaRoutes(app: FastifyInstance, backend: PhantomBackend) {
       ...ownerProps, name: { type: 'string', minLength: 1, maxLength: 255 }, size: { type: 'integer', minimum: 1 }, type: { type: 'string', minLength: 3 } } } } },
   async (req, reply) => {
     try {
-      const started = await backend.media.createUpload({ name: req.body.name, size: req.body.size, mimeType: req.body.type, owner: ownerOf(req.body) });
+      const started = await backend.media.createUpload({ name: req.body.name, size: req.body.size, mimeType: req.body.type, owner: ownerOf(req.body, 'browser') });
       return reply.code(201).send(ok(started));
     } catch (error) { return refuse(reply, error); }
   });
@@ -92,7 +92,7 @@ export function mediaRoutes(app: FastifyInstance, backend: PhantomBackend) {
         additionalProperties: false, properties: { partNumber: { type: 'integer', minimum: 1, maximum: 10000 }, etag: { type: 'string', minLength: 1 } } } } } } } },
   async (req, reply) => {
     try {
-      return ok(await backend.media.complete(req.params.id, { owner: ownerOf(req.body), name: req.body.name, size: req.body.size, mimeType: req.body.type,
+      return ok(await backend.media.complete(req.params.id, { owner: ownerOf(req.body, 'browser'), name: req.body.name, size: req.body.size, mimeType: req.body.type,
         uploadId: req.body.upload_id, parts: req.body.parts }));
     } catch (error) { return refuse(reply, error); }
   });
@@ -100,7 +100,7 @@ export function mediaRoutes(app: FastifyInstance, backend: PhantomBackend) {
     description: 'A direct upload the sender will not finish: its bytes and parts are removed.',
     params: idParam, querystring: { type: 'object', properties: { upload_id: { type: 'string', minLength: 1 }, organization: ownerProps.organization } } } },
   async (req, reply) => {
-    try { await backend.media.abandon(req.params.id, { owner: { organizationId: req.query.organization ?? null }, uploadId: req.query.upload_id }); return ok({}); }
+    try { await backend.media.abandon(req.params.id, { owner: { organizationId: req.query.organization ?? null, source: 'browser' }, uploadId: req.query.upload_id }); return ok({}); }
     catch (error) { return refuse(reply, error); }
   });
 

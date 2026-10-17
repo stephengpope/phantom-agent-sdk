@@ -17,6 +17,8 @@ import { SystemPromptError } from '../../agents/SystemPrompt.js';
 import { toolsFor } from '../../tools/registry.js';
 import { messageLine, userMessage } from '@phantom-agent-sdk/client/transcript';
 import { writeAttachment } from '../../telegram/TelegramAttachments.js';
+import { MediaError, mediaFacts } from '../../media/Media.js';
+import type { Readable } from 'node:stream';
 import type { SessionEvent } from '../../agents/SessionEvents.js';
 
 const log = logger('sessions');
@@ -54,8 +56,10 @@ const idParam = { type: 'object', properties: { id: { type: 'string' } }, requir
  *  already holds a prompt keeps it (Sessions.freezeSystemPrompt) — a restart
  *  or a re-open never moves a running session's prompt. Called at creation
  *  and, for sessions born before the column, on their first open. */
-/** An attached file's ceiling (attachments route) — ours, unlike telegram's
- *  20MB bot-API ceiling: a screencast should fit, a disk image should not. */
+/** An attached file's ceiling when it lands in the scratch pad (attachments
+ *  route) — ours, unlike telegram's 20MB bot-API ceiling: a screencast should
+ *  fit, a disk image should not. A file that goes to media storage instead
+ *  answers to media_max_bytes. */
 const MAX_ATTACHMENT_BYTES = 64 * 1024 * 1024;
 
 
@@ -548,31 +552,57 @@ export function sessionRoutes(app: FastifyInstance, ctx: PhantomBackend) {
 
   // ---- attachments -----------------------------------------------------------
   // A file given to the session out-of-band — the first caller is a drag
-  // onto the cli window: the terminal pastes the path, the cli reads the
-  // LOCAL file and posts it here. It lands in the session's scratch pad —
-  // the same policy telegram attachments follow (attachments.ts). The cli
-  // inserts a chip into the user's prompt that expands to the scratch path
-  // on submit, so the agent sees the path inline — no queued message.
-  app.post<{ Params: { id: string }; Body: { name: string; data: string } }>(
+  // onto the cli window: the terminal pastes the path, the cli streams the
+  // LOCAL file here as the raw body (never a string: a base64 body put the
+  // whole file in memory twice and died past 512MB on Node's string cap).
+  // Where it lands is the project's: with media on (the media tools are
+  // offered), it streams into media storage and is recorded with its facts;
+  // otherwise into the session's scratch pad, as telegram attachments do
+  // (TelegramAttachments.ts). Either way the answer says where, and the cli
+  // puts a chip in the user's prompt that expands to it on submit — the
+  // agent sees the media id or the scratch path inline; no queued message.
+  app.post<{ Params: { id: string }; Querystring: { name: string; type?: string } }>(
     '/sessions/:id/attachments', { schema: { ...TAG,
       summary: 'Attach a file',
-      description: 'Saves a file into the session\'s scratch folder, where the agent can read it, and returns its path.',
+      description: 'The request body is the file. With media on for the project it is kept as a media file (answers `media`); ' +
+        'otherwise it is saved into the session\'s scratch folder (answers `path`). Either way the agent can reach it.',
       params: idParam,
-      body: { type: 'object', required: ['name', 'data'], additionalProperties: false,
-        properties: { name: { type: 'string', minLength: 1 }, data: { type: 'string' } } } },
-      // base64 inflates by 4/3; fastify's 1MB default would refuse every
-      // screenshot.
-      bodyLimit: Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 1024 },
+      querystring: { type: 'object', required: ['name'], properties: { name: { type: 'string', minLength: 1, maxLength: 255 }, type: { type: 'string' } } } },
+      // The body is a stream here, not parsed; media counts it against its
+      // own limit as it flows, the scratch path against MAX_ATTACHMENT_BYTES.
+      bodyLimit: Number.MAX_SAFE_INTEGER },
     async (req, reply) => {
       const session = await ctx.sessions.get(req.params.id);
       if (!session) return reply.code(404).send(err('session_not_found', `no session ${req.params.id}`));
-      const data = Buffer.from(req.body.data, 'base64');
-      if (!data.length) return reply.code(400).send(err('invalid_args', 'the file is empty', true));
-      if (data.length > MAX_ATTACHMENT_BYTES) {
-        return reply.code(413).send(err('too_large', `file is over ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB`, true));
+      const project = await ctx.projects.get(session.projectId);
+      if (!project) return reply.code(404).send(err('not_found', 'project not found'));
+      const body = req.body as Readable;
+      const length = Number(req.headers['content-length']);
+      const toMedia = Boolean(await ctx.settings.resolve('agent_media', scopeOf(project))) && await ctx.media.configured(project.organizationId);
+      if (toMedia) {
+        const aborted = new AbortController();
+        req.raw.on('close', () => { if (!req.raw.complete) aborted.abort(); });
+        try {
+          const row = await ctx.media.upload(body, { name: req.query.name, mimeType: req.query.type, signal: aborted.signal,
+            ...(Number.isFinite(length) && length > 0 ? { size: length } : {}),
+            owner: { organizationId: project.organizationId, projectId: project.id, sessionId: session.id, userId: acting()?.userId ?? null, source: 'attachment' } });
+          return ok({ media: row.id, type: row.mimeType, name: row.name, size: row.size, facts: mediaFacts(row) });
+        } catch (error) {
+          if (error instanceof MediaError) return reply.code(error.code === 'too_large' ? 413 : error.code === 'type_not_allowed' ? 415 : 400).send(err(`media_${error.code}`, error.message, true));
+          throw error;
+        }
       }
+      if (Number.isFinite(length) && length > MAX_ATTACHMENT_BYTES) return reply.code(413).send(err('too_large', `file is over ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB`, true));
+      const chunks: Buffer[] = []; let total = 0;
+      for await (const chunk of body) {
+        total += (chunk as Buffer).length;
+        if (total > MAX_ATTACHMENT_BYTES) return reply.code(413).send(err('too_large', `file is over ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB`, true));
+        chunks.push(chunk as Buffer);
+      }
+      const data = Buffer.concat(chunks);
+      if (!data.length) return reply.code(400).send(err('invalid_args', 'the file is empty', true));
       const workspaceId = workspaceOf(session);
-      const a = await writeAttachment((await ctx.runners.of(workspaceId)).files(workspaceId), data, { filename: req.body.name });
+      const a = await writeAttachment((await ctx.runners.of(workspaceId)).files(workspaceId), data, { filename: req.query.name });
       if (!a) return reply.code(422).send(err('invalid_args', 'the file claims to be an image but is not one', true));
       return ok({ path: a.containerPath, type: a.type, name: a.displayName });
     });
