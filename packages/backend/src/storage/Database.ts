@@ -82,6 +82,9 @@ export const AUTHENTICATED_ROLE = 'authenticated';
 /** The group every project login (AgentDatabases) is a member of: what
  *  the SDK's migrations grant to the agent, they grant to this role. */
 export const AGENT_ROLE = 'agent';
+/** An agent's private schema and its login share one name: `project_<id>`
+ *  (AgentDatabases.nameOf). */
+export const AGENT_SCHEMA_PREFIX = 'project_';
 
 /** The SDK's schemas — the migrator's. Every other schema of ours is user
  *  space's, the app_migrator's. */
@@ -224,6 +227,26 @@ function actingPool(pool: pg.Pool): pg.Pool {
   });
 }
 
+/** Every table, view, sequence and function in `schema` owned by one of
+ *  `from` becomes `to`'s. Objects owned by anyone else are not touched. */
+async function reassignOwned(superuser: pg.Client, schema: string, from: string[], to: string): Promise<void> {
+  const owner = quoteIdent(to);
+  const { rows: relations } = await superuser.query<{ relname: string; relkind: string }>(
+    `select c.relname, c.relkind from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = $1 and c.relkind in ('r', 'p', 'v', 'm', 'S') and pg_get_userbyid(c.relowner) = any($2)`,
+    [schema, from]);
+  for (const { relname, relkind } of relations) {
+    const kind = relkind === 'S' ? 'sequence' : 'table';
+    await superuser.query(`alter ${kind} ${quoteIdent(schema)}.${quoteIdent(relname)} owner to ${owner}`);
+  }
+  const { rows: functions } = await superuser.query<{ signature: string }>(
+    `select p.oid::regprocedure::text as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname = $1 and pg_get_userbyid(p.proowner) = any($2)`,
+    [schema, from]);
+  for (const { signature } of functions) await superuser.query(`alter function ${signature} owner to ${owner}`);
+  if (relations.length || functions.length) log.info({ schema, to, relations: relations.length, functions: functions.length }, 'ownership handed over');
+}
+
 /** The same server and database, another role. */
 function withRole(url: string, role: string, password: string): string {
   const parsed = new URL(url);
@@ -281,30 +304,34 @@ async function ensureRoles(superuser: pg.Client, passwords: { migrator: string; 
   // … and a schema per project (AgentDatabases.ensure) is the backend's to make.
   await superuser.query(`grant create on database ${database} to ${backend}`);
 
-  // Ownership: the SDK's schemas are the migrator's, every other schema of
-  // ours user space's (the app_migrator's) — and everything in each. An
-  // install from before has them owned by the superuser or the migrator:
-  // hand them over, table by table (sequences follow).
+  // Ownership is set where an object is made: the SDK's migrations run as
+  // migrator, an app's as app_migrator, and an agent builds in its own
+  // `project_<id>` schema as its own role. Nothing here takes what one of
+  // those owns. Two heals only, each a no-op once done: an install from
+  // before the split has the superuser (or, in user space, the migrator)
+  // owning schemas and tables — those are handed over; and boots before
+  // this one took every agent's objects for app_migrator — those go back
+  // to the role that shares the schema's name.
   await superuser.query(`grant connect, create, temporary on database ${database} to ${migrator}, ${appMigrator}`);
+  const { rows: [{ superuserRole }] } = await superuser.query<{ superuserRole: string }>('select current_user as "superuserRole"');
   const { rows: schemas } = await superuser.query<{ nspname: string }>(
     `select nspname from pg_namespace where nspname <> all($1) and nspname not like 'pg_%'`, [SYSTEM_SCHEMAS]);
   for (const { nspname } of schemas) {
     const schemaName = quoteIdent(nspname);
-    // public holds no table of user space's: what is there (the ledger
-    // before 054) is the SDK's.
-    const ownerRole = SDK_SCHEMAS.includes(nspname) || nspname === 'public' ? MIGRATOR_ROLE : APP_MIGRATOR_ROLE;
-    const owner = quoteIdent(ownerRole);
-    if (nspname !== 'public') await superuser.query(`alter schema ${schemaName} owner to ${owner}`);
-    const { rows: tables } = await superuser.query<{ relname: string }>(
-      `select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-        where n.nspname = $1 and c.relkind in ('r', 'p', 'v', 'm') and c.relowner <> (select oid from pg_roles where rolname = $2)`,
-      [nspname, ownerRole]);
-    for (const { relname } of tables) await superuser.query(`alter table ${schemaName}.${quoteIdent(relname)} owner to ${owner}`);
-    const { rows: functions } = await superuser.query<{ signature: string }>(
-      `select p.oid::regprocedure::text as signature from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-        where n.nspname = $1 and p.proowner <> (select oid from pg_roles where rolname = $2)`,
-      [nspname, ownerRole]);
-    for (const { signature } of functions) await superuser.query(`alter function ${signature} owner to ${owner}`);
+    if (nspname.startsWith(AGENT_SCHEMA_PREFIX)) {
+      await reassignOwned(superuser, nspname, [APP_MIGRATOR_ROLE], nspname);
+    } else {
+      // public holds no table of user space's: what is there (the ledger
+      // before 054) is the SDK's.
+      const ownerRole = SDK_SCHEMAS.includes(nspname) || nspname === 'public' ? MIGRATOR_ROLE : APP_MIGRATOR_ROLE;
+      const legacyOwners = ownerRole === MIGRATOR_ROLE ? [superuserRole] : [superuserRole, MIGRATOR_ROLE];
+      if (nspname !== 'public') {
+        const { rows: [{ nspowner }] } = await superuser.query<{ nspowner: string }>(
+          'select pg_get_userbyid(nspowner) as nspowner from pg_namespace where nspname = $1', [nspname]);
+        if (legacyOwners.includes(nspowner)) await superuser.query(`alter schema ${schemaName} owner to ${quoteIdent(ownerRole)}`);
+      }
+      await reassignOwned(superuser, nspname, legacyOwners, ownerRole);
+    }
     // service_role: every row in every table that exists now. authenticated: the
     // schema only — a table is reachable by a user when a migration grants it.
     await superuser.query(`grant usage on schema ${schemaName} to ${backend}, ${authenticated}`);

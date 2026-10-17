@@ -29,7 +29,7 @@ import { logger } from '../lib/log.js';
 import { AGENT_TYPES, runStatements, type QueryOptions, type StatementResult } from './sqlRunner.js';
 export { SqlError, locate, type QueryOptions, type StatementResult, type SqlErrorLocation } from './sqlRunner.js';
 import { derivedPassword } from '../lib/crypto.js';
-import { AGENT_ROLE } from './Database.js';
+import { AGENT_ROLE, AGENT_SCHEMA_PREFIX } from './Database.js';
 
 const log = logger('database');
 
@@ -58,7 +58,7 @@ export class AgentDatabases {
 
   /** Schema name and role name are the same word: `project_<id>`. A
    *  project id is a lowercase ULID, so the name is a plain identifier. */
-  nameOf(projectId: string): string { return `project_${projectId}`; }
+  nameOf(projectId: string): string { return `${AGENT_SCHEMA_PREFIX}${projectId}`; }
 
   private passwordOf(projectId: string): string { return derivedPassword(this.encryptionKey, `database:${projectId}`); }
 
