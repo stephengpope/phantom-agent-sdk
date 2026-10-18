@@ -48,8 +48,8 @@ export interface MediaFile {
   updatedAt: string;
 }
 
-/** Who a file belongs to; nothing = the service role's. */
-export type MediaOwner = { organization?: string; project?: string; user?: string };
+/** Who a file belongs to; nothing = the service role's. `source`: how it came to be, when not the route's own default. */
+export type MediaOwner = { organization?: string; project?: string; user?: string; session?: string; source?: 'attachment' | 'agent' | 'url' | 'browser' | 'api' };
 
 export type MediaUploadPlan =
   | { mode: 'single'; url: string; headers: Record<string, string> }
@@ -63,19 +63,30 @@ export type MediaUploadSent = { uploadId?: string; parts?: { partNumber: number;
 /** Parts in flight at once for a direct upload. */
 const PART_CONCURRENCY = 4;
 
+/** How far an upload is: bytes landed so far, of the whole. */
+export type UploadProgress = (sent: number, total: number) => void;
+
 /** Carry an upload plan out: the file's bytes to storage, straight from
  *  wherever the Blob is (a browser's File, a host's file-backed Blob), one
- *  PUT or PART_CONCURRENCY parts at a time. Answers what `complete` needs. */
-export async function sendToStorage(file: Blob, plan: MediaUploadPlan, signal?: AbortSignal): Promise<MediaUploadSent> {
-  if (plan.mode === 'single') { await put(plan.url, file, plan.headers, signal); return {}; }
+ *  PUT or PART_CONCURRENCY parts at a time. Answers what `complete` needs.
+ *  `onProgress` hears each part as it lands (a whole PUT's body cannot be
+ *  watched: streaming it would send it chunked, which storage refuses —
+ *  the plan keeps parts small enough for the steps to read as progress). */
+export async function sendToStorage(file: Blob, plan: MediaUploadPlan, options: { signal?: AbortSignal; onProgress?: UploadProgress } = {}): Promise<MediaUploadSent> {
+  const { signal, onProgress } = options;
+  let sent = 0;
+  const landed = (bytes: number) => { sent += bytes; onProgress?.(sent, file.size); };
+  if (plan.mode === 'single') { await put(plan.url, file, plan.headers, signal); landed(file.size); return {}; }
   const { partSize, parts } = plan;
   const etags: { partNumber: number; etag: string }[] = [];
   let next = 0;
   const worker = async () => {
     for (let part = parts[next++]; part; part = parts[next++]) {
       const start = (part.partNumber - 1) * partSize;
-      const etag = await put(part.url, file.slice(start, start + partSize), {}, signal);
+      const piece = file.slice(start, start + partSize);
+      const etag = await put(part.url, piece, {}, signal);
       etags.push({ partNumber: part.partNumber, etag });
+      landed(piece.size);
     }
   };
   await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, parts.length) }, worker));
@@ -131,7 +142,7 @@ export class Media {
     const started = await this.startUpload(declared);
     const uploadId = started.upload.mode === 'multipart' ? started.upload.uploadId : undefined;
     try {
-      return await this.complete(started.id, { ...declared, ...(await sendToStorage(file, started.upload, signal)) });
+      return await this.complete(started.id, { ...declared, ...(await sendToStorage(file, started.upload, { signal })) });
     } catch (error) {
       await this.abandon(started.id, { organization: owner.organization, uploadId }).catch(() => {});
       throw error;

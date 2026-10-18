@@ -79,10 +79,12 @@ export type UploadPlan =
 
 export interface MediaLink { id: string; url: string; expiresAt: string }
 
-/** Up to this size a browser sends one PUT; above it, parts. */
-const SINGLE_PUT_MAX = 100 * 1024 ** 2;
 /** Part size: 16 MiB, or bigger when a file would need more than the 10,000 parts S3 allows. */
 const PART_SIZE = 16 * 1024 ** 2;
+/** Up to one part's worth a sender makes one PUT; above it, parts — sent
+ *  in parallel, and each one landing is a step of progress the sender can
+ *  show (a single PUT's body cannot be watched). */
+const SINGLE_PUT_MAX = PART_SIZE;
 const MAX_PARTS = 10_000;
 /** How long a browser has to start sending once it has its upload URLs. */
 const UPLOAD_URL_SECONDS = 3600;

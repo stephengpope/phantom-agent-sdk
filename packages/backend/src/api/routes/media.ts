@@ -24,8 +24,10 @@ const ownerProps = {
   organization: { type: 'string', description: 'The owning organization\'s id; absent = the service role\'s.' },
   project: { type: 'string', description: 'The project the file belongs to, if any.' },
   user: { type: 'string', description: 'The user the file belongs to or was uploaded by, if any.' },
+  session: { type: 'string', description: 'The session the file was given to, if any.' },
+  source: { type: 'string', enum: ['attachment', 'agent', 'url', 'browser', 'api'], description: 'How the file came to be; defaults to the route\'s own (browser for a direct upload, api through the server).' },
 };
-type OwnerQuery = { organization?: string; project?: string; user?: string };
+type OwnerQuery = { organization?: string; project?: string; user?: string; session?: string; source?: MediaSource };
 
 const STATUS: Record<MediaError['code'], number> = {
   not_configured: 409, not_found: 404, invalid_args: 400, too_large: 413, type_not_allowed: 415,
@@ -37,7 +39,10 @@ function refuse(reply: FastifyReply, error: unknown) {
   throw error;
 }
 
-const ownerOf = (query: OwnerQuery, source: MediaSource) => ({ organizationId: query.organization ?? null, projectId: query.project ?? null, userId: query.user ?? null, source });
+const SOURCES: MediaSource[] = ['attachment', 'agent', 'url', 'browser', 'api'];
+/** The owner a caller names. `source` is what the caller says it is, within the known five — the route's own default otherwise. */
+const ownerOf = (query: OwnerQuery, source: MediaSource) => ({ organizationId: query.organization ?? null, projectId: query.project ?? null, userId: query.user ?? null,
+  sessionId: query.session ?? null, source: query.source && SOURCES.includes(query.source) ? query.source : source });
 
 export function mediaRoutes(app: FastifyInstance, backend: PhantomBackend) {
   // The bytes of POST /media arrive as a stream, handed over unread:
