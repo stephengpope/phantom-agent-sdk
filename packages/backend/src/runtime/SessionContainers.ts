@@ -113,9 +113,9 @@ export interface ContainerOpts {
    *  Absent (tests) means the container never gets a token, whatever the
    *  setting says. */
   settings?: Settings;
-  /** The agent databases, for `agent_database_shared`: the container gets
-   *  the project's key as PHANTOM_PROJECT_KEY, with the api's address and
-   *  the project id. Absent (tests) means never. */
+  /** The agent databases, for `agent_database_shared` / `agent_llm_shared`:
+   *  the container gets the project's key as PHANTOM_PROJECT_KEY, with the
+   *  api's address and the project id. Absent (tests) means never. */
   databases?: AgentDatabases;
   /** Where the api is reached from a container (env.publicUrl): what
    *  PHANTOM_API_URL says. */
@@ -173,7 +173,7 @@ export class SessionContainers {
         container_pids_limit: number | null; container_docker: boolean; container_sudo: boolean; container_runtime: string | null; container_disk_gb: number | null };
     return {
       image: String(limits.container_image),
-      env: [...(await this.credentialEnv(project)), ...(await this.databaseEnv(project))],
+      env: [...(await this.credentialEnv(project)), ...(await this.projectKeyEnv(project))],
       memMb: limits.container_memory_mb,
       cpus: limits.container_cpus,
       pids: limits.container_pids_limit,
@@ -207,17 +207,20 @@ export class SessionContainers {
     return [`GITHUB_TOKEN=${pat}`, `GH_TOKEN=${pat}`];
   }
 
-  /** The project's key, when BOTH `agent_database` and `agent_database_shared`
-   *  are on. The second deliberate hole in "the project's code cannot reach
-   *  it": the key enters the container's env and — like the PAT — dies with
-   *  it. It opens one route, the project's own database query, over the api
-   *  (AgentDatabases) — so any runner, on any box, serves it. */
-  private async databaseEnv(project: ProjectRow | undefined): Promise<string[]> {
+  /** The project's key, when something is shared with the project's code:
+   *  its database (`agent_database` AND `agent_database_shared`) or the model
+   *  (`agent_llm_shared`). The second deliberate hole in "the project's code
+   *  cannot reach it": the key enters the container's env and — like the PAT
+   *  — dies with it. It opens the project's own shared routes over the api
+   *  (AgentDatabases; each route checks its own switch) — so any runner, on
+   *  any box, serves it. */
+  private async projectKeyEnv(project: ProjectRow | undefined): Promise<string[]> {
     if (!project || !this.opts.settings || !this.opts.databases || !this.opts.apiUrl) return [];
-    const on = await this.opts.settings.resolveMany(['agent_database', 'agent_database_shared'], scopeOf(project));
-    if (!on.agent_database || !on.agent_database_shared) return [];
+    const on = await this.opts.settings.resolveMany(['agent_database', 'agent_database_shared', 'agent_llm_shared'], scopeOf(project));
+    const shared = [on.agent_database && on.agent_database_shared && 'database', on.agent_llm_shared && 'llm'].filter(Boolean);
+    if (!shared.length) return [];
     const key = await this.opts.databases.keyFor(project.id);
-    log.info({ project: project.name }, 'workspace container gets PHANTOM_PROJECT_KEY (agent_database_shared)');
+    log.info({ project: project.name, shared }, 'workspace container gets PHANTOM_PROJECT_KEY');
     return [`PHANTOM_API_URL=${this.opts.apiUrl}`, `PHANTOM_PROJECT_ID=${project.id}`, `PHANTOM_PROJECT_KEY=${key}`];
   }
 

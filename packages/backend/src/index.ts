@@ -18,6 +18,7 @@ export { SqlError, locate, type QueryOptions, type StatementResult } from './sto
 
 // agents
 export { AgentTypesError } from './agents/AgentTypes.js';
+export { oneShot, type OneShotDeps } from './agents/oneShot.js';
 export { sessionPin, cascade, pinned, type ModelPin, type ResolvedModel, type AgentRunConfig, type CompactionSettings } from './agents/AgentConfig.js';
 export { CATALOG_PROVIDERS, hasCatalog, fromModelsDev, fetchCatalog, writeSnapshot, type CatalogProvider, type CatalogModel, type Catalog, type CatalogSource } from './agents/ModelCatalog.js';
 
@@ -77,7 +78,7 @@ export { SKILLS_DIR, scanSkills, mergeSkills, parseDescription, splitFrontmatter
 export { lintSkillMd, validateSkillMd, validateSkillName, validateFilePath, MAX_DESCRIPTION, MAX_FILE_BYTES, MAX_NAME, MAX_SKILL_CONTENT, FILE_SUBDIRS } from './skills/validate.js';
 export { withCurrentDate } from './prompt/template.js';
 export { fill, firstLineOf } from '@phantom-agent-sdk/client';
-export { SKILLS_LIST, SECRETS_LIST, GITHUB_TOKEN, AGENT_DATABASE, AGENT_DATABASE_SHARED, MEDIA, DISK_LIMIT, TIME_DATE } from './prompt/serverBlocks.js';
+export { SKILLS_LIST, SECRETS_LIST, GITHUB_TOKEN, AGENT_DATABASE, AGENT_DATABASE_SHARED, AGENT_LLM_SHARED, MEDIA, DISK_LIMIT, TIME_DATE } from './prompt/serverBlocks.js';
 
 // telegram plumbing, notifications, the queue
 export { TelegramApi, titled, ALLOWED_UPDATES, MAX_OUTBOUND_BYTES } from './telegram/TelegramApi.js';

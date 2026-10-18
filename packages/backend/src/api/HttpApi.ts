@@ -41,6 +41,7 @@ import { settingsRoutes } from './routes/settings.js';
 import { secretsRoutes } from './routes/secrets.js';
 import { projectRoutes } from './routes/projects.js';
 import { databaseRoutes } from './routes/database.js';
+import { llmRoutes } from './routes/llm.js';
 import { sessionRoutes } from './routes/sessions.js';
 import { toolRoutes } from './routes/tools.js';
 import { tasksRoutes } from './routes/tasks.js';
@@ -156,6 +157,7 @@ export class HttpApi {
       secretsRoutes(api, backend);
       projectRoutes(api, backend);
       databaseRoutes(api, backend);
+      llmRoutes(api, backend);
       sessionRoutes(api, backend);
       toolRoutes(api, backend);
       tasksRoutes(api, backend);

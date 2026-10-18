@@ -51,4 +51,7 @@ export class AgentTypes {
   }
   /** Does a session of `name` own its checkout, borrow one, or run with none? */
   workspaceOf(name: string): AgentTypeDefinition['workspace'] { return this.require(name).workspace; }
+  /** The type whose sessions own a checkout — the one a session container is
+   *  for, so what its code asks the model goes on this type's model. */
+  ownerOfWorkspaces(): AgentTypeDefinition | undefined { return this.list().find((type) => type.workspace === 'own'); }
 }

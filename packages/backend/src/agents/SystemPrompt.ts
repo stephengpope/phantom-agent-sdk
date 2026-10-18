@@ -15,7 +15,7 @@ import type { WorkspaceFiles } from '../runtime/WorkspaceHost.js';
 import type { SystemPromptLayout, SystemPromptEntry, StoredSystemPrompt } from '@phantom-agent-sdk/client/systemPrompt';
 import { SYSTEM_PROMPT_SECTIONS } from '@phantom-agent-sdk/client/systemPrompt';
 import { fill } from '@phantom-agent-sdk/client';
-import { SKILLS_LIST, SECRETS_LIST, GITHUB_TOKEN, AGENT_DATABASE, AGENT_DATABASE_SHARED, MEDIA, DISK_LIMIT, TIME_DATE } from '../prompt/serverBlocks.js';
+import { SKILLS_LIST, SECRETS_LIST, GITHUB_TOKEN, AGENT_DATABASE, AGENT_DATABASE_SHARED, AGENT_LLM_SHARED, MEDIA, DISK_LIMIT, TIME_DATE } from '../prompt/serverBlocks.js';
 import { scanSkillsIn, mergeSkills, type SkillMeta } from '../skills/skills.js';
 import { Clock } from '../lib/clock.js';
 import { systemSkills } from '../runtime/SystemSkills.js';
@@ -42,7 +42,7 @@ export class SystemPromptError extends Error {
 }
 
 /** The settings every block may read — resolved once per assembly. */
-const SETTINGS_READ = ['container_image', 'container_disk_gb', 'agent_git_credentials', 'agent_database', 'agent_database_shared', 'agent_media',
+const SETTINGS_READ = ['container_image', 'container_disk_gb', 'agent_git_credentials', 'agent_database', 'agent_database_shared', 'agent_llm_shared', 'agent_media',
   'agent_soul', 'agent_agents_md', 'timezone'] as const;
 type Resolved = Awaited<ReturnType<Settings['resolveMany']>> & Record<(typeof SETTINGS_READ)[number], unknown>;
 
@@ -100,6 +100,7 @@ export const SERVER_PROMPT_BLOCKS = {
   agent_database: (src: BlockSource): Promise<string> =>
     Promise.resolve(src.resolved.agent_database
       ? (src.resolved.agent_database_shared ? AGENT_DATABASE_SHARED : AGENT_DATABASE) : ''),
+  agent_llm: (src: BlockSource): Promise<string> => Promise.resolve(src.resolved.agent_llm_shared ? AGENT_LLM_SHARED : ''),
 
   disk_limit: (src: BlockSource): Promise<string> =>
     Promise.resolve(src.resolved.container_disk_gb ? fill(DISK_LIMIT, { gb: String(Number(src.resolved.container_disk_gb)) }) : ''),

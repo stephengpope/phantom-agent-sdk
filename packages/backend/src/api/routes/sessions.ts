@@ -114,7 +114,7 @@ async function releaseHold(ctx: PhantomBackend, session: SessionRow, client: str
  *  sections, each a list of server block names and the agent's own text
  *  (@phantom-agent-sdk/client/systemPrompt). */
 const layoutSection = { type: 'array', items: { anyOf: [
-  { type: 'string', description: 'a server block: soul_md, agents_md, skills_list, secrets_list, time_date, github_token, agent_database' },
+  { type: 'string', description: 'a server block: soul_md, agents_md, skills_list, secrets_list, time_date, github_token, agent_database, agent_llm' },
   { type: 'object', required: ['text'], additionalProperties: false, properties: { text: { type: 'string' } } },
 ] } } as const;
 const SYSTEM_PROMPT_LAYOUT = { type: 'object', required: ['stable', 'context', 'volatile'], additionalProperties: false,

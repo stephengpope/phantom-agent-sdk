@@ -40,6 +40,11 @@ export const AGENT_DATABASE = `${AGENT_DATABASE_WHAT} No code in the project can
 
 export const AGENT_DATABASE_SHARED = `${AGENT_DATABASE_WHAT} The database_query tool runs SQL in it and should be your primary way of accessing it. The project's code can reach the same database over the api, as you: \`PHANTOM_API_URL\`, \`PHANTOM_PROJECT_ID\` and \`PHANTOM_PROJECT_KEY\` are in your environment. \`POST $PHANTOM_API_URL/api/projects/$PHANTOM_PROJECT_ID/database/query\` with \`Authorization: Bearer $PHANTOM_PROJECT_KEY\` and a JSON body \`{"sql", "params", "limit"}\` runs SQL exactly as database_query does (several statements = one transaction; $1…$n params need a single statement) and answers \`{ok, data: {results: [{command, rowCount, rows}]}}\`; an error answers \`{ok: false, error: {code, message}}\` with nothing applied. The key opens that one route and nothing else.`;
 
+// ═══ agent_llm_shared ════════════════════════════════════════════════════════
+// Present only when agent_llm_shared is on for the project. Facts only.
+
+export const AGENT_LLM_SHARED = `The project's code can ask the model a question over the api, on the model your sessions use: \`PHANTOM_API_URL\`, \`PHANTOM_PROJECT_ID\` and \`PHANTOM_PROJECT_KEY\` are in your environment. \`POST $PHANTOM_API_URL/api/projects/$PHANTOM_PROJECT_ID/llm\` with \`Authorization: Bearer $PHANTOM_PROJECT_KEY\` and a JSON body \`{"prompt", "system"?, "maxOutputTokens"?}\` answers \`{ok, data: {text}}\`; one prompt in, text out, no memory between calls, every call billed to this project's token usage.`;
+
 // ═══ media ═══════════════════════════════════════════════════════════════════
 // Present only when agent_media is on for the project AND media storage is
 // configured for its organization — the same rule that offers the media
