@@ -28,8 +28,10 @@ declare module 'fastify' {
   interface FastifySchema { tags?: readonly string[]; summary?: string; description?: string }
   /** Set by the front step: who is calling (null = nobody). */
   interface FastifyRequest { caller: Caller | null }
-  /** `serviceRole: true` — the service role's alone; a user gets access denied. */
-  interface FastifyContextConfig { serviceRole?: boolean }
+  /** `serviceRole: true` — the service role's alone; a user gets access denied.
+   *  `projectKey: true` — the one route a project key may call (for its own
+   *  `:id`); a project key anywhere else is nobody. */
+  interface FastifyContextConfig { serviceRole?: boolean; projectKey?: boolean }
 }
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
@@ -208,8 +210,9 @@ export class HttpApi {
    *  or for no one. 'invalid': the headers name an organization that is not
    *  there, or a user who is not its member. */
   async #who(req: FastifyRequest): Promise<{ caller: Caller; acting?: Acting } | null | 'invalid'> {
-    const caller = await this.backend.identity.callerOf(req);
+    const caller = this.#projectCaller(req) ?? await this.backend.identity.callerOf(req);
     if (!caller) return null;
+    if (caller.type === 'project') return { caller };
     if (caller.type === 'user') return { caller, acting: { organizationId: caller.organization.id, userId: caller.user.id } };
     const header = (name: string) => { const value = req.headers[name]; return typeof value === 'string' && value ? value : undefined; };
     const organizationId = header(ACTING_ORGANIZATION_HEADER);
@@ -218,6 +221,15 @@ export class HttpApi {
     if (!organizationId) return 'invalid';
     const acting = await this.backend.identity.actingFor(organizationId, userId);
     return acting ? { caller, acting } : 'invalid';
+  }
+
+  /** A project key in the bearer: the project's own code calling (the
+   *  container's PHANTOM_PROJECT_KEY, AgentDatabases). Never a sign-in. */
+  #projectCaller(req: FastifyRequest): Caller | null {
+    const authorization = String(req.headers.authorization ?? '');
+    if (!authorization.startsWith('Bearer ') || !this.backend.agentDatabases) return null;
+    const projectId = this.backend.agentDatabases.projectOfKey(authorization.slice('Bearer '.length));
+    return projectId ? { type: 'project', projectId } : null;
   }
 
   /** THE front step. `required`: nobody gets a bare 401 (/api); else the
@@ -235,6 +247,12 @@ export class HttpApi {
         }
         req.caller = who?.caller ?? null;
         if (!who) { if (required) reply.code(401).send(); else done(); return; }
+        if (who.caller.type === 'project') {
+          // Its one route, for its one project; every other request is nobody's.
+          const forItself = req.routeOptions.config?.projectKey && (req.params as { id?: string }).id === who.caller.projectId;
+          if (forItself) done(); else { req.caller = null; reply.code(401).send(); }
+          return;
+        }
         if (who.caller.type === 'user' && req.routeOptions.config?.serviceRole) { reply.code(403).send(ACCESS_DENIED); return; }
         if (who.acting) actAs(who.acting, () => done()); else done();
       }, (error: unknown) => done(error instanceof Error ? error : new Error(String(error))));

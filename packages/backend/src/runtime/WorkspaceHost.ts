@@ -69,9 +69,6 @@ export interface ContainerPlan {
   runtime: string | null;
   /** The checkout and the container's own disk held to this many GB. */
   diskGb: number | null;
-  /** The project's database host name: the container joins a private
-   *  network with the database server (local hosts only). */
-  databaseHost: string | null;
 }
 
 /** A running session container: its workspace, and the image it was created from. */

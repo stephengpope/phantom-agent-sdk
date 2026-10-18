@@ -107,6 +107,23 @@ test('nothing moved', { skip: !url }, async () => {
   assert.deepEqual(rows, [{ id: 'm-a1', organization_id: 'orga' }, { id: 'm-a2', organization_id: 'orga' }, { id: 'm-b1', organization_id: 'orgb' }]);
 });
 
+test('the project key names its project and nothing else does', { skip: !url }, async () => {
+  const a1 = await agents.keyFor('a1');
+  assert.match(a1, /^ph_project_a1_[A-Za-z0-9_-]{43}$/);
+  assert.equal(agents.projectOfKey(a1), 'a1');
+  assert.equal(agents.projectOfKey(await agents.keyFor('b1')), 'b1');
+  // Another project's secret under a1's id, a byte off, a wrong prefix, an empty id: nobody.
+  const b1Secret = (await agents.keyFor('b1')).split('_').at(-1);
+  assert.equal(agents.projectOfKey(`ph_project_a1_${b1Secret}`), null);
+  assert.equal(agents.projectOfKey(a1.slice(0, -1) + (a1.endsWith('A') ? 'B' : 'A')), null);
+  assert.equal(agents.projectOfKey(a1.replace('ph_project_', 'ph_user_role_')), null);
+  assert.equal(agents.projectOfKey('ph_project_'), null);
+  assert.equal(agents.projectOfKey('ph_project__x'), null);
+  // A guessed id creates nothing.
+  assert.equal(agents.projectOfKey('ph_project_zz_nope'), null);
+  assert.equal((await superuser.query(`select from pg_roles where rolname = 'project_zz'`)).rowCount, 0);
+});
+
 test('drop takes the schema and role', { skip: !url }, async () => {
   await agents.drop('a1');
   assert.equal((await superuser.query(`select from pg_namespace where nspname = 'project_a1'`)).rowCount, 0);

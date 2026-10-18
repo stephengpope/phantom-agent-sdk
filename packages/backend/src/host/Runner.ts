@@ -139,7 +139,6 @@ export class Runner {
       local: {
         volume: env.WORKSPACE_VOLUME || undefined,
         network: env.AGENT_NETWORK || undefined,
-        databaseContainer: env.AGENT_DATABASE_CONTAINER || undefined,
         diskQuota: env.DISK_QUOTA_URL || undefined,
         apiImage: env.API_IMAGE || undefined,
       },

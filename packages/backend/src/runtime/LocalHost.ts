@@ -41,9 +41,6 @@ export interface LocalHostOptions {
   /** The agents' network (AGENT_NETWORK), made here when missing: a bridge
    *  with inter-container traffic off. Unset (dev) = Docker's default bridge. */
   network?: string;
-  /** The database server's container (AGENT_DATABASE_CONTAINER): a container
-   *  whose plan names a database host joins a private network with it. */
-  databaseContainer?: string;
   /** The disk-quota helper (DISK_QUOTA_URL). Absent = no disk limit can be set. */
   diskQuota?: string;
   /** The api image name, for the disk-support probe (API_IMAGE). */
@@ -220,10 +217,6 @@ export class LocalHost implements WorkspaceHost {
     }
     // The checkout held to the same disk limit, before the first process runs.
     if (plan.diskGb) await this.limitCheckout(key, plan.diskGb);
-    // Shared database: its private network joined before the first process
-    // runs. Not shared (any more): none may linger from before.
-    if (plan.databaseHost) await this.joinDatabaseNetwork(key, created.id, plan.databaseHost);
-    else await this.dropDatabaseNetwork(key);
     await created.start();
     log.info({ workspace: key, image: plan.image }, 'workspace container started');
     return { created: true };
@@ -236,8 +229,6 @@ export class LocalHost implements WorkspaceHost {
     await this.docker.getContainer(containerName(workspaceId)).remove({ force: true, v: true }).catch((error) => {
       if ((error as { statusCode?: number }).statusCode !== 404) throw error;
     });
-    await this.dropDatabaseNetwork(workspaceId).catch((error) =>
-      log.warn({ workspace: workspaceId, err: errStr(error) }, 'the workspace\'s database network could not be removed'));
   }
 
   async containerState(workspaceId: string): Promise<ContainerState> {
@@ -402,37 +393,5 @@ export class LocalHost implements WorkspaceHost {
       .then(() => log.info({ network: name }, 'agents network created'), (error: unknown) => {
         if ((error as { statusCode?: number }).statusCode !== 409) throw error;
       });
-  }
-
-  /** A workspace's private database network: internal (no way out), holding
-   *  this container and the database server — reached by the URL's host
-   *  name, an alias on this network alone. */
-  private databaseNetwork(key: string): string { return `phantom-agentdb-${key}`; }
-  private async joinDatabaseNetwork(key: string, containerId: string, host: string): Promise<void> {
-    if (!this.opts.databaseContainer) {
-      log.warn({ workspace: key }, 'the plan names a database host but AGENT_DATABASE_CONTAINER is unset on this host — the container cannot reach the database');
-      return;
-    }
-    const name = this.databaseNetwork(key);
-    const network = this.docker.getNetwork(name);
-    await network.inspect().catch(() => this.docker.createNetwork({ Name: name, Driver: 'bridge', Internal: true, Labels: { 'phantom.workspace': key } }));
-    const already = (error: unknown) => {
-      const status = (error as { statusCode?: number }).statusCode;
-      if (status !== 403 && status !== 409) throw error;   // already connected
-    };
-    await network.connect({ Container: this.opts.databaseContainer, EndpointConfig: { Aliases: [host] } }).catch(already);
-    await network.connect({ Container: containerId }).catch(already);
-  }
-  /** Gone if there: whoever is still on it is disconnected first (Docker
-   *  will not remove a network in use), then the network. */
-  private async dropDatabaseNetwork(key: string): Promise<void> {
-    const network = this.docker.getNetwork(this.databaseNetwork(key));
-    const info = await network.inspect().catch((error: unknown) => {
-      if ((error as { statusCode?: number }).statusCode === 404) return null;
-      throw error;
-    }) as { Containers?: Record<string, unknown> } | null;
-    if (!info) return;
-    for (const container of Object.keys(info.Containers ?? {})) await network.disconnect({ Container: container, Force: true });
-    await network.remove();
   }
 }

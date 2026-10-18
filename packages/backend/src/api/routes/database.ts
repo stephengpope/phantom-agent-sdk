@@ -4,6 +4,10 @@
 //
 //   GET  /projects/:id/database         { enabled }   — the tool kit asks before it offers database_query
 //   POST /projects/:id/database/query   { sql, limit } — run it, connected as the project's role
+//
+// The query route is also the ONE route a project key (the container's
+// PHANTOM_PROJECT_KEY, `agent_database_shared`) may call — for its own
+// project; the front step refuses it everywhere else.
 import type { FastifyInstance } from 'fastify';
 import { SqlError } from '../../storage/AgentDatabases.js';
 import { ok, err } from '../HttpApi.js';
@@ -27,9 +31,9 @@ export function databaseRoutes(app: FastifyInstance, ctx: PhantomBackend) {
     });
 
   app.post<{ Params: { id: string }; Body: { sql: string; limit?: number; maxCellChars?: number; params?: unknown[] } }>(
-    '/projects/:id/database/query', { schema: { ...TAG,
+    '/projects/:id/database/query', { config: { projectKey: true }, schema: { ...TAG,
       summary: 'Query the agent database',
-      description: 'Runs SQL as the project\'s agent login and returns the result of each statement.',
+      description: 'Runs SQL as the project\'s agent login and returns the result of each statement. The project\'s own code may call this with its project key (PHANTOM_PROJECT_KEY, when agent_database_shared is on).',
       params: idParam,
       body: { type: 'object', required: ['sql'], additionalProperties: false,
         properties: {

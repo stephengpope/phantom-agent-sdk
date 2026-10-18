@@ -19,8 +19,14 @@
 // group (Database.ensureRoles), which holds every grant migration 067
 // makes. Its password is derived from ENCRYPTION_KEY and the project id:
 // stored nowhere, re-set on every ensure (so a rotated key heals itself),
-// and it never leaves this process except as AGENT_DATABASE_URL when
-// `agent_database_shared` is on.
+// and it never leaves this process.
+//
+// `agent_database_shared` lets the project's own code in too — not with the
+// password (the database server is on no network a runner's container can
+// reach, by design) but with a PROJECT KEY: `ph_project_<id>_<secret>`,
+// derived the same way, accepted by the api on exactly one route — this
+// project's /database/query — and refused everywhere else (HttpApi's front
+// step). The container gets it in its env and dies with it.
 //
 // The setting `agent_database` says whether a project HAS this; the route
 // reads it. Off keeps the data; only the project going drops it.
@@ -28,10 +34,12 @@ import pg from 'pg';
 import { logger } from '../lib/log.js';
 import { AGENT_TYPES, runStatements, type QueryOptions, type StatementResult } from './sqlRunner.js';
 export { SqlError, locate, type QueryOptions, type StatementResult, type SqlErrorLocation } from './sqlRunner.js';
-import { derivedPassword } from '../lib/crypto.js';
+import { derivedPassword, timingSafeEqualStr } from '../lib/crypto.js';
 import { AGENT_ROLE, AGENT_SCHEMA_PREFIX } from './Database.js';
 
 const log = logger('database');
+
+const PROJECT_KEY_PREFIX = 'ph_project_';
 
 const STATEMENT_TIMEOUT = '30s';
 /** Where the SDK's tables are: on the agent's search path after its own
@@ -62,14 +70,25 @@ export class AgentDatabases {
 
   private passwordOf(projectId: string): string { return derivedPassword(this.encryptionKey, `database:${projectId}`); }
 
-  /** The connection string the project's code gets as AGENT_DATABASE_URL
-   *  when `agent_database_shared` is on — the same login the tool uses.
-   *  Ensures first, so the URL works the moment it is handed out. The host
-   *  is the server's own (`postgres` on the stack network); the container
-   *  must be on that network to resolve it. */
-  async urlFor(projectId: string): Promise<string> {
+  /** The project key the project's code gets as PHANTOM_PROJECT_KEY when
+   *  `agent_database_shared` is on. Ensures first, so the key works the
+   *  moment it is handed out. */
+  async keyFor(projectId: string): Promise<string> {
     await this.ensure(projectId);
-    return this.connectionString(projectId);
+    return this.deriveKey(projectId);
+  }
+
+  /** The project a bearer names, when it is that project's key; null for
+   *  anything else. Pure: no ensure — a guessed id must create nothing. */
+  projectOfKey(bearer: string): string | null {
+    if (!bearer.startsWith(PROJECT_KEY_PREFIX)) return null;
+    const projectId = bearer.slice(PROJECT_KEY_PREFIX.length).split('_')[0] ?? '';
+    if (!projectId) return null;
+    return timingSafeEqualStr(bearer, this.deriveKey(projectId)) ? projectId : null;
+  }
+
+  private deriveKey(projectId: string): string {
+    return `${PROJECT_KEY_PREFIX}${projectId}_${derivedPassword(this.encryptionKey, `api:${projectId}`)}`;
   }
 
   private connectionString(projectId: string): string {

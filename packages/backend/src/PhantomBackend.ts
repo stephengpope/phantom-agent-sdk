@@ -333,7 +333,7 @@ export class PhantomBackend {
     // watch, a container gone is one to drop. The hooks are closures over the
     // backend, which exists long before any container starts.
     const sessionContainers = new SessionContainers(runners, {
-      settings, databases: agentDatabases,
+      settings, databases: agentDatabases, apiUrl: env.publicUrl,
       onStarted: (workspaceId, project) => backend.git.instantSync.watchWorkspace(workspaceId, project),
       onRemoved: (workspaceId) => backend.git.instantSync.unwatchWorkspace(workspaceId),
     });

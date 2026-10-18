@@ -114,9 +114,12 @@ export interface ContainerOpts {
    *  setting says. */
   settings?: Settings;
   /** The agent databases, for `agent_database_shared`: the container gets
-   *  the project's connection string as AGENT_DATABASE_URL. Absent (tests)
-   *  means never. */
+   *  the project's key as PHANTOM_PROJECT_KEY, with the api's address and
+   *  the project id. Absent (tests) means never. */
   databases?: AgentDatabases;
+  /** Where the api is reached from a container (env.publicUrl): what
+   *  PHANTOM_API_URL says. */
+  apiUrl?: string;
   /** A container came up for this workspace — awaited before `ensure` returns,
    *  so whatever the caller does next (a file write) happens after the
    *  listener is in place. Instant sync attaches its watcher here. */
@@ -152,7 +155,7 @@ export class SessionContainers {
   async ensure(workspaceId: string, project: ProjectRow | undefined): Promise<WorkspaceHost> {
     const host = await this.hosts.of(workspaceId);
     if (await host.containerState(workspaceId) === 'running') return host;
-    const { created } = await host.containerUp(workspaceId, await this.plan(project, host));
+    const { created } = await host.containerUp(workspaceId, await this.plan(project));
     if (created) {
       await this.opts.onStarted?.(workspaceId, project)
         .catch((error) => log.warn({ workspace: workspaceId, err: errStr(error) }, 'onStarted listener failed — container is up regardless'));
@@ -162,16 +165,15 @@ export class SessionContainers {
 
   /** Everything the host needs to create the container, read from the
    *  settings in the project's scope. */
-  async plan(project: ProjectRow | undefined, host: WorkspaceHost): Promise<ContainerPlan> {
+  async plan(project: ProjectRow | undefined): Promise<ContainerPlan> {
     if (!this.opts.settings) throw new Error('SessionContainers needs settings to create a container');
     const limits = await this.opts.settings.resolveMany(
       ['container_image', 'container_memory_mb', 'container_cpus', 'container_pids_limit', 'container_docker', 'container_sudo', 'container_runtime', 'container_disk_gb'],
       project ? scopeOf(project) : {}) as { container_image: string; container_memory_mb: number | null; container_cpus: number | null;
         container_pids_limit: number | null; container_docker: boolean; container_sudo: boolean; container_runtime: string | null; container_disk_gb: number | null };
-    const database = await this.databaseEnv(project, host);
     return {
       image: String(limits.container_image),
-      env: [...(await this.credentialEnv(project)), ...database.env],
+      env: [...(await this.credentialEnv(project)), ...(await this.databaseEnv(project))],
       memMb: limits.container_memory_mb,
       cpus: limits.container_cpus,
       pids: limits.container_pids_limit,
@@ -179,7 +181,6 @@ export class SessionContainers {
       sudo: limits.container_sudo !== false,
       runtime: limits.container_runtime || null,
       diskGb: limits.container_disk_gb || null,
-      databaseHost: database.host ?? null,
     };
   }
 
@@ -206,24 +207,18 @@ export class SessionContainers {
     return [`GITHUB_TOKEN=${pat}`, `GH_TOKEN=${pat}`];
   }
 
-  /** The agent database's connection string, when BOTH `agent_database` and
-   *  `agent_database_shared` are on. The second deliberate hole in "the
-   *  project's code cannot reach it": the role's password enters the
-   *  container's env, and — like the PAT — dies with it. The host joins the
-   *  container to the database server's private network by the host name in
-   *  the URL — which only the backend's own runner can do: the database server is a
-   *  container on THIS daemon. A remote host gets no database. */
-  private async databaseEnv(project: ProjectRow | undefined, host: WorkspaceHost): Promise<{ env: string[]; host?: string }> {
-    if (!project || !this.opts.settings || !this.opts.databases) return { env: [] };
+  /** The project's key, when BOTH `agent_database` and `agent_database_shared`
+   *  are on. The second deliberate hole in "the project's code cannot reach
+   *  it": the key enters the container's env and — like the PAT — dies with
+   *  it. It opens one route, the project's own database query, over the api
+   *  (AgentDatabases) — so any runner, on any box, serves it. */
+  private async databaseEnv(project: ProjectRow | undefined): Promise<string[]> {
+    if (!project || !this.opts.settings || !this.opts.databases || !this.opts.apiUrl) return [];
     const on = await this.opts.settings.resolveMany(['agent_database', 'agent_database_shared'], scopeOf(project));
-    if (!on.agent_database || !on.agent_database_shared) return { env: [] };
-    if (host.id !== null) {
-      log.warn({ project: project.name, host: host.name }, 'agent_database_shared is on but the workspace is on a session runner — the container cannot reach the database');
-      return { env: [] };
-    }
-    const url = await this.opts.databases.urlFor(project.id);
-    log.info({ project: project.name }, 'workspace container gets AGENT_DATABASE_URL (agent_database_shared)');
-    return { env: [`AGENT_DATABASE_URL=${url}`], host: new URL(url).hostname };
+    if (!on.agent_database || !on.agent_database_shared) return [];
+    const key = await this.opts.databases.keyFor(project.id);
+    log.info({ project: project.name }, 'workspace container gets PHANTOM_PROJECT_KEY (agent_database_shared)');
+    return [`PHANTOM_API_URL=${this.opts.apiUrl}`, `PHANTOM_PROJECT_ID=${project.id}`, `PHANTOM_PROJECT_KEY=${key}`];
   }
 
   /** Null when an online session runner can hold a container to `container_disk_gb`. */

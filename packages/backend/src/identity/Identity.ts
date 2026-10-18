@@ -102,13 +102,15 @@ const DEFAULT_MAIL: MailTemplates = {
 
 export type OrganizationRole = 'owner' | 'admin' | 'member';
 
-/** Who is calling: the service role (its key) or a signed-in user, in the
+/** Who is calling: the service role (its key), a signed-in user, in the
  *  organization their session is active in (a user role key: the one it was
- *  made for). Sign-in opens a session in the user's first organization; they
- *  switch it explicitly. */
+ *  made for), or a project's own code (its project key — AgentDatabases),
+ *  which the front step lets onto one route alone. Sign-in opens a session
+ *  in the user's first organization; they switch it explicitly. */
 export type Caller =
   | { type: 'service_role' }
-  | { type: 'user'; user: UserRow; organization: OrganizationRow; role: OrganizationRole };
+  | { type: 'user'; user: UserRow; organization: OrganizationRow; role: OrganizationRole }
+  | { type: 'project'; projectId: string };
 
 export class IdentityError extends Error {
   constructor(readonly code: 'disabled' | 'unauthorized' | 'email_taken', message: string) { super(message); this.name = 'IdentityError'; }

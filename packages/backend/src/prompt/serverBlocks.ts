@@ -31,13 +31,14 @@ export const GITHUB_TOKEN = `A GitHub token is in your environment (GITHUB_TOKEN
 // ═══ agent_database ══════════════════════════════════════════════════════════
 // Present only when agent_database is on for the project. Facts only —
 // what it is, not what to do with it. Two wordings: private (the default),
-// and shared with the project's code (agent_database_shared on).
+// and shared with the project's code (agent_database_shared on): the api
+// route, the env that reaches it, the shape of the answer.
 
 const AGENT_DATABASE_WHAT = `You have your own PostgreSQL schema for this project, \`project_<id>\`, first on your search path: the tables you create land there, and it persists across sessions and container restarts. Next on the path is \`phantom_agent_sdk\`, where this project's own records are readable — projects, workspaces, sessions, cards, card_revisions, crons, media (the tracked files; a row per file, the bytes are in storage), token_usage — read-only, your organization's rows only, joinable with your tables.`;
 
 export const AGENT_DATABASE = `${AGENT_DATABASE_WHAT} No code in the project can reach any of it. The database_query tool runs SQL in it.`;
 
-export const AGENT_DATABASE_SHARED = `${AGENT_DATABASE_WHAT} The database_query tool runs SQL in it and should be your primary way of accessing it. The project's code can reach the same schema should you need to write code that needs access: \`AGENT_DATABASE_URL\` in your environment is the connection string.`;
+export const AGENT_DATABASE_SHARED = `${AGENT_DATABASE_WHAT} The database_query tool runs SQL in it and should be your primary way of accessing it. The project's code can reach the same database over the api, as you: \`PHANTOM_API_URL\`, \`PHANTOM_PROJECT_ID\` and \`PHANTOM_PROJECT_KEY\` are in your environment. \`POST $PHANTOM_API_URL/api/projects/$PHANTOM_PROJECT_ID/database/query\` with \`Authorization: Bearer $PHANTOM_PROJECT_KEY\` and a JSON body \`{"sql", "params", "limit"}\` runs SQL exactly as database_query does (several statements = one transaction; $1…$n params need a single statement) and answers \`{ok, data: {results: [{command, rowCount, rows}]}}\`; an error answers \`{ok: false, error: {code, message}}\` with nothing applied. The key opens that one route and nothing else.`;
 
 // ═══ media ═══════════════════════════════════════════════════════════════════
 // Present only when agent_media is on for the project AND media storage is
