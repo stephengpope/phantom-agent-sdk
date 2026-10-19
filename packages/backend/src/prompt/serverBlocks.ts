@@ -43,7 +43,7 @@ export const AGENT_DATABASE_SHARED = `${AGENT_DATABASE_WHAT} The database_query 
 // ═══ agent_llm_shared ════════════════════════════════════════════════════════
 // Present only when agent_llm_shared is on for the project. Facts only.
 
-export const AGENT_LLM_SHARED = `The project's code can ask the model a question over the api, on the model your sessions use: \`PHANTOM_API_URL\`, \`PHANTOM_PROJECT_ID\` and \`PHANTOM_PROJECT_KEY\` are in your environment. \`POST $PHANTOM_API_URL/api/projects/$PHANTOM_PROJECT_ID/llm\` with \`Authorization: Bearer $PHANTOM_PROJECT_KEY\` and a JSON body \`{"prompt", "system"?, "maxOutputTokens"?}\` answers \`{ok, data: {text}}\`; one prompt in, text out, no memory between calls, every call billed to this project's token usage.`;
+export const AGENT_LLM_SHARED = `The project's code can ask the model a question over the api, on the model your sessions use: \`PHANTOM_API_URL\`, \`PHANTOM_PROJECT_ID\` and \`PHANTOM_PROJECT_KEY\` are in your environment. \`POST $PHANTOM_API_URL/api/projects/$PHANTOM_PROJECT_ID/llm\` with \`Authorization: Bearer $PHANTOM_PROJECT_KEY\` and a JSON body \`{"prompt", "system"?, "maxOutputTokens"?, "media_id"?, "json"?}\` answers \`{ok, data: {text, json?}}\`; one prompt in, text out, no memory between calls, every call billed to this project's token usage. \`media_id\` (the id of an image among the organization's media files) shows the model that image beside the prompt; \`json: true\` forces a JSON answer, handed back parsed as \`data.json\` (an error when the model's text is not valid JSON).`;
 
 // ═══ media ═══════════════════════════════════════════════════════════════════
 // Present only when agent_media is on for the project AND media storage is

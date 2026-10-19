@@ -34,7 +34,8 @@ const STATUS: Record<MediaError['code'], number> = {
   storage_changed: 409, storage_failed: 502,
 };
 
-function refuse(reply: FastifyReply, error: unknown) {
+/** A MediaError as the HTTP answer it deserves; anything else rethrown. Shared with the llm route (a media_id it cannot use). */
+export function refuse(reply: FastifyReply, error: unknown) {
   if (error instanceof MediaError) return reply.code(STATUS[error.code]).send(err(`media_${error.code}`, error.message, error.code === 'storage_failed'));
   throw error;
 }
