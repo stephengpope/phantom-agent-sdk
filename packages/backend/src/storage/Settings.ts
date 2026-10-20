@@ -22,6 +22,7 @@ import type { SettingDefinition } from '../doors.js';
 import type { ModelCatalog } from '../agents/ModelCatalog.js';
 import type { SettingsEvents } from '../agents/SettingsEvents.js';
 import { textOf } from '../lib/text.js';
+import { OAuthSecrets, type OAuthConfig, type OAuthRecord, type OAuthState, type OAuthVault, type OAuthSecretStore } from '../oauth/OAuthSecrets.js';
 
 const log = logger('settings');
 
@@ -79,8 +80,11 @@ export class SettingsWriteError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'SettingsWriteError'; }
 }
 
-/** A secret as listed — name and description, NEVER the value. */
-export interface SecretMeta { name: string; description: string; scope: string }
+/** A secret as listed — name and description, NEVER the value. An OAuth
+ *  secret carries its connection's facts too (provider, status, account). */
+export interface SecretMeta { name: string; description: string; scope: string; oauth?: OAuthState }
+/** The plain half of a secret row. */
+interface SecretValue { description?: unknown; oauth?: OAuthState }
 
 const GENERAL = 'general';
 const SECRET_NS = 'secret';
@@ -90,10 +94,13 @@ type ByScope = Map<string, Map<string, unknown>>;
 type RawLayers = Partial<Record<Layer, unknown>>;
 const EMPTY_LAYERS = { global: null, organization: null, user: null, project: null };
 
-const secretMeta = (row: { key: string; scope: string; value: unknown }): SecretMeta => ({
-  name: row.key, scope: row.scope,
-  description: textOf((row.value as { description?: unknown } | null)?.description),
-});
+const secretMeta = (row: { key: string; scope: string; value: unknown }): SecretMeta => {
+  const value = row.value as SecretValue | null;
+  return {
+    name: row.key, scope: row.scope, description: textOf(value?.description),
+    ...(value?.oauth ? { oauth: value.oauth } : {}),
+  };
+};
 const sortSecrets = (secrets: SecretMeta[]) => secrets.sort((a, b) =>
   (a.scope === b.scope ? a.name.localeCompare(b.name) : a.scope === GLOBAL ? -1 : a.scope.localeCompare(b.scope)));
 
@@ -116,9 +123,14 @@ export class Settings {
      *  acting user, so the policies decide which layers a user may write.
      *  Absent: reads use `database` too (tests). */
     system?: Drizzle,
-  ) { this.reader = system ?? database; }
+  ) {
+    this.reader = system ?? database;
+    this.oauth = new OAuthSecrets(this.oauthStore());
+  }
 
   private readonly reader: Drizzle;
+  /** The OAuth flavour of secret: connect, refresh, disconnect. */
+  readonly oauth: OAuthSecrets;
 
   // ── the registry ──────────────────────────────────────────────────────
 
@@ -535,20 +547,33 @@ export class Settings {
     return sortSecrets(rows.map(secretMeta));
   }
 
-  /** One secret's value, most-specific-first over the scopes given (in
-   *  chain order, as `scopeNames` lists them — the last wins). undefined =
-   *  no such secret, or it would not decrypt. */
-  async readSecret(name: string, scopeNames: string[] = [GLOBAL]): Promise<string | undefined> {
+  /** The one secret row `name` resolves to over the chain (the last scope
+   *  listed wins), its plain half parsed and its blob decrypted. undefined =
+   *  no row, or it would not decrypt. */
+  private async secretRow(name: string, scopeNames: string[]): Promise<{ scope: string; value: SecretValue; plain: string } | undefined> {
     const rows = await this.reader.select().from(settings).where(and(
       inArray(settings.scope, scopeNames), eq(settings.namespace, SECRET_NS), eq(settings.key, name)));
     const byScope = new Map(rows.map((row) => [row.scope, row]));
     for (const scopeName of [...scopeNames].reverse()) {
       const row = byScope.get(scopeName);
       if (!row) continue;
-      try { return decrypt(this.encryptionKey, Buffer.from(row.valueEnc as Buffer), rowName(SECRET_NS, scopeName, name)); }
-      catch { log.warn({ scope: scopeName, name }, 'stored secret could not be decrypted — kept, not deleted'); return undefined; }
+      try {
+        const plain = decrypt(this.encryptionKey, Buffer.from(row.valueEnc as Buffer), rowName(SECRET_NS, scopeName, name));
+        return { scope: scopeName, value: (row.value ?? {}), plain };
+      } catch { log.warn({ scope: scopeName, name }, 'stored secret could not be decrypted — kept, not deleted'); return undefined; }
     }
     return undefined;
+  }
+
+  /** One secret's USABLE value, most-specific-first over the scopes given
+   *  (in chain order, as `scopeNames` lists them — the last wins): the
+   *  stored token, or for an OAuth secret a live access token (refreshed
+   *  when about to lapse — throws OAuthSecretError when only the user can
+   *  fix it). undefined = no such secret, or it would not decrypt. */
+  async readSecret(name: string, scopeNames: string[] = [GLOBAL]): Promise<string | undefined> {
+    const row = await this.secretRow(name, scopeNames);
+    if (!row) return undefined;
+    return row.value.oauth ? this.oauth.token(name, scopeNames) : row.plain;
   }
 
   /** Create or overwrite one secret at ONE scope. No `value` = keep the
@@ -560,11 +585,46 @@ export class Settings {
       const kept = await this.database.update(settings).set({ value: { description }, updatedAt: new Date() }).where(where).returning({ key: settings.key });
       return kept.length > 0;
     }
-    const row = { value: { description } as never, valueEnc: encrypt(this.encryptionKey, value, rowName(SECRET_NS, scopeName, name)) };
+    await this.putSecretRow(scopeName, name, { description }, value);
+    return true;
+  }
+
+  /** Create or reconfigure an OAuth secret at ONE scope. The connection
+   *  state (tokens, status) is kept when the row already is one with the
+   *  same provider + client id; any other change starts it disconnected.
+   *  No `clientSecret` = keep the stored one. */
+  async writeOAuthSecret(scopeName: string, name: string, description: string, config: OAuthConfig, clientSecret?: string): Promise<void> {
+    const current = await this.oauthStore().loadOAuth(name, [scopeName]);
+    const same = current !== undefined && current.oauth.provider === config.provider && current.oauth.clientId === config.clientId;
+    const oauth: OAuthState = same
+      ? { ...current.oauth, ...config }
+      : { status: 'disconnected', expiresAt: null, accountEmail: null, ...config };
+    const vault: OAuthVault = {
+      clientSecret: clientSecret ?? current?.vault.clientSecret,
+      ...(same ? { accessToken: current.vault.accessToken, refreshToken: current.vault.refreshToken } : {}),
+    };
+    await this.putSecretRow(scopeName, name, { description, oauth }, JSON.stringify(vault));
+  }
+
+  private async putSecretRow(scopeName: string, name: string, value: SecretValue, plain: string): Promise<void> {
+    const row = { value: value as never, valueEnc: encrypt(this.encryptionKey, plain, rowName(SECRET_NS, scopeName, name)) };
     await this.database.insert(settings)
       .values({ scope: scopeName, namespace: SECRET_NS, key: name, ...row })
       .onConflictDoUpdate({ target: [settings.scope, settings.namespace, settings.key], set: { ...row, updatedAt: new Date() } });
-    return true;
+  }
+
+  /** What the OAuth object reads and writes rows through. */
+  private oauthStore(): OAuthSecretStore {
+    return {
+      loadOAuth: async (name, chain): Promise<OAuthRecord | undefined> => {
+        const row = await this.secretRow(name, chain);
+        if (!row?.value.oauth) return undefined;
+        let vault: OAuthVault = {};
+        try { vault = JSON.parse(row.plain) as OAuthVault; } catch { /* a static value under an oauth row: nothing usable */ }
+        return { scope: row.scope, description: textOf(row.value.description), oauth: row.value.oauth, vault };
+      },
+      saveOAuth: (scope, name, description, oauth, vault) => this.putSecretRow(scope, name, { description, oauth }, JSON.stringify(vault)),
+    };
   }
 
   /** Delete one secret at ONE scope. Whether a row was there. */

@@ -19,7 +19,7 @@ import { SKILLS_LIST, SECRETS_LIST, GITHUB_TOKEN, AGENT_DATABASE, AGENT_DATABASE
 import { scanSkillsIn, mergeSkills, type SkillMeta } from '../skills/skills.js';
 import { Clock } from '../lib/clock.js';
 import { systemSkills } from '../runtime/SystemSkills.js';
-import type { Settings } from '../storage/Settings.js';
+import type { Settings, SecretMeta } from '../storage/Settings.js';
 import type { ProjectRow } from '../storage/schema.js';
 import { scopeNames, scopeOf } from '../lib/scopes.js';
 
@@ -81,14 +81,15 @@ export const SERVER_PROMPT_BLOCKS = {
   },
 
   secrets_list: async (src: BlockSource): Promise<string> => {
-    const byName = new Map<string, { name: string; description: string }>();
+    const byName = new Map<string, SecretMeta>();
     // Chain order: a deeper layer's row replaces a shallower one's.
-    for (const sec of await src.settings.listSecrets(Object.values(scopeNames(scopeOf(src.project))))) {
-      byName.set(sec.name, { name: sec.name, description: sec.description });
-    }
+    for (const sec of await src.settings.listSecrets(Object.values(scopeNames(scopeOf(src.project))))) byName.set(sec.name, sec);
     const secrets = [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
     if (!secrets.length) return '';
-    return fill(SECRETS_LIST, { secretsList: secrets.map((secret) => `- ${secret.name}: ${clip(secret.description)}`).join('\n') });
+    // An OAuth secret says so: the agent then knows secret_get hands it a live token.
+    const line = (secret: SecretMeta) => `- ${secret.name}: ${clip(secret.description)}`
+      + (secret.oauth ? ` (oauth · ${secret.oauth.provider} · ${secret.oauth.status})` : '');
+    return fill(SECRETS_LIST, { secretsList: secrets.map(line).join('\n') });
   },
 
   time_date: (src: BlockSource): Promise<string> =>

@@ -39,6 +39,7 @@ export { newId, idTime } from './ids.js';
 export { DEFAULT_COLUMNS, STATUS_ICON, normalizeKey, newKey, keyedItems, type ChecklistItem } from './cards.js';
 export { pullLine, type PullProgress, type UpdateEvent } from './update.js';
 export { secretName, SECRET_NAME_RULE } from './secretName.js';
+export { OAUTH_REDIRECT_URI, type OAuthPreset, type OAuthConfig, type OAuthState } from './secretOAuth.js';
 export { REPO, parseVersion, isBehind, bare, checkLatest } from './version.js';
 export { ndjson } from './ndjson.js';
 export { fill, firstLineOf } from './template.js';

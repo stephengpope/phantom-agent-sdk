@@ -8,6 +8,7 @@ export type { SettingDefinition, AgentTypeDefinition, ToolDefinition, ToolRunCon
 export { SDK_MIGRATIONS, ORGANIZATION_SETTING, USER_SETTING, type Drizzle, type Transaction, type MigrationSet } from './storage/Database.js';
 export * as schema from './storage/schema.js';
 export { SettingsWriteError, type SettingScope, type SettingSource, type SettingLayers, type SettingEntry, type SettingMeta, type SecretMeta } from './storage/Settings.js';
+export { OAuthSecrets, OAuthSecretError, OAUTH_REDIRECT_URI, type OAuthPreset, type OAuthConfig, type OAuthState } from './oauth/OAuthSecrets.js';
 export { sdkSettings, agentTypeSettings } from './storage/sdkSettings.js';
 export type { TokenRecord, ReportRow, Windows, WindowTotals } from './storage/TokenLog.js';
 export type { BackgroundTaskRow, BackgroundTaskEnd } from './storage/BackgroundTasks.js';

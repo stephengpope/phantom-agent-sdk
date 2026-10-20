@@ -28,7 +28,7 @@
     "migrations"
   ],
   "scripts": {
-    "build": "node ../../scripts/assert-sdk-version.mjs && tsc -p tsconfig.json && cp src/agents/models-snapshot.json dist/agents/",
+    "build": "node ../../scripts/assert-sdk-version.mjs && tsc -p tsconfig.json && cp src/agents/models-snapshot.json dist/agents/ && cp src/oauth/presets.json dist/oauth/",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "tsx --test \"src/**/*.test.ts\""
@@ -57,6 +57,7 @@
     "ipaddr.js": "^2.5.0",
     "mdast-util-from-markdown": "2.0.3",
     "nodemailer": "10.0.15",
+    "openid-client": "6.8.8",
     "pg": "8.23.0",
     "pino": "9.14.0",
     "postgres-array": "2.0.0",
