@@ -88,7 +88,7 @@ export function secretsRoutes(app: FastifyInstance, ctx: PhantomBackend) {
 
   app.get('/secrets/oauth/presets', { schema: { ...TAG,
     summary: 'OAuth providers',
-    description: 'The providers an OAuth secret can connect to (endpoints, default scopes, a hint on where to create the client), and the redirect URI to register with the provider.' } },
+    description: 'The providers an OAuth secret can connect to (endpoints, default scopes), and the redirect URI to register with the provider.' } },
     async () => ok({ presets: ctx.settings.oauth.presets, redirectUri: OAUTH_REDIRECT_URI }));
 
   app.put<{ Params: { name: string }; Querystring: ScopeQuery;

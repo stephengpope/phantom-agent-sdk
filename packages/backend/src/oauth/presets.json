@@ -4,18 +4,79 @@
     "label": "Google",
     "authUrl": "https://accounts.google.com/o/oauth2/v2/auth",
     "tokenUrl": "https://oauth2.googleapis.com/token",
-    "defaultScopes": ["openid", "email", "profile"],
+    "defaultScopes": [
+      "openid",
+      "email",
+      "profile"
+    ],
     "pkce": true,
     "clientAuth": "post",
-    "authParams": { "access_type": "offline", "prompt": "consent" },
-    "hint": "console.cloud.google.com/auth/clients → Create client → type \"Desktop app\". Any localhost redirect is accepted.",
+    "authParams": {
+      "access_type": "offline",
+      "prompt": "consent"
+    },
     "setups": [
-      { "id": "gmail", "label": "Gmail", "description": "Read, organize, and send mail.", "scopes": ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.send", "openid", "email"] },
-      { "id": "drive", "label": "Drive", "description": "Full read/write to your Drive files.", "scopes": ["https://www.googleapis.com/auth/drive", "openid", "email"] },
-      { "id": "sheets", "label": "Sheets", "description": "Read and write spreadsheets.", "scopes": ["https://www.googleapis.com/auth/spreadsheets", "openid", "email"] },
-      { "id": "docs", "label": "Docs", "description": "Read and write documents.", "scopes": ["https://www.googleapis.com/auth/documents", "openid", "email"] },
-      { "id": "calendar", "label": "Calendar", "description": "View and manage calendars and events.", "scopes": ["https://www.googleapis.com/auth/calendar", "openid", "email"] },
-      { "id": "identity", "label": "Sign-in only", "description": "Just identity (email + profile).", "scopes": ["openid", "email", "profile"] }
+      {
+        "id": "gmail",
+        "label": "Gmail",
+        "description": "Read, organize, and send mail.",
+        "scopes": [
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/gmail.send",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "drive",
+        "label": "Drive",
+        "description": "Full read/write to your Drive files.",
+        "scopes": [
+          "https://www.googleapis.com/auth/drive",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "sheets",
+        "label": "Sheets",
+        "description": "Read and write spreadsheets.",
+        "scopes": [
+          "https://www.googleapis.com/auth/spreadsheets",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "docs",
+        "label": "Docs",
+        "description": "Read and write documents.",
+        "scopes": [
+          "https://www.googleapis.com/auth/documents",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "calendar",
+        "label": "Calendar",
+        "description": "View and manage calendars and events.",
+        "scopes": [
+          "https://www.googleapis.com/auth/calendar",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "identity",
+        "label": "Sign-in only",
+        "description": "Just identity (email + profile).",
+        "scopes": [
+          "openid",
+          "email",
+          "profile"
+        ]
+      }
     ]
   },
   {
@@ -23,16 +84,65 @@
     "label": "Microsoft",
     "authUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
     "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
-    "defaultScopes": ["openid", "email", "profile", "offline_access", "User.Read"],
+    "defaultScopes": [
+      "openid",
+      "email",
+      "profile",
+      "offline_access",
+      "User.Read"
+    ],
     "pkce": true,
     "clientAuth": "none",
-    "authParams": { "prompt": "consent" },
-    "hint": "entra.microsoft.com → App registrations → New → platform \"Mobile and desktop applications\", redirect http://localhost. No client secret (public client).",
+    "authParams": {
+      "prompt": "consent"
+    },
     "setups": [
-      { "id": "mail", "label": "Mail", "description": "Read and send mail.", "scopes": ["Mail.ReadWrite", "Mail.Send", "offline_access", "openid", "email"] },
-      { "id": "files", "label": "Files", "description": "Read and write OneDrive/SharePoint files.", "scopes": ["Files.ReadWrite.All", "offline_access", "openid", "email"] },
-      { "id": "calendar", "label": "Calendar", "description": "View and manage events.", "scopes": ["Calendars.ReadWrite", "offline_access", "openid", "email"] },
-      { "id": "identity", "label": "Sign-in only", "description": "Just identity + basic profile.", "scopes": ["openid", "email", "profile", "offline_access", "User.Read"] }
+      {
+        "id": "mail",
+        "label": "Mail",
+        "description": "Read and send mail.",
+        "scopes": [
+          "Mail.ReadWrite",
+          "Mail.Send",
+          "offline_access",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "files",
+        "label": "Files",
+        "description": "Read and write OneDrive/SharePoint files.",
+        "scopes": [
+          "Files.ReadWrite.All",
+          "offline_access",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "calendar",
+        "label": "Calendar",
+        "description": "View and manage events.",
+        "scopes": [
+          "Calendars.ReadWrite",
+          "offline_access",
+          "openid",
+          "email"
+        ]
+      },
+      {
+        "id": "identity",
+        "label": "Sign-in only",
+        "description": "Just identity + basic profile.",
+        "scopes": [
+          "openid",
+          "email",
+          "profile",
+          "offline_access",
+          "User.Read"
+        ]
+      }
     ]
   },
   {
@@ -40,14 +150,39 @@
     "label": "GitHub",
     "authUrl": "https://github.com/login/oauth/authorize",
     "tokenUrl": "https://github.com/login/oauth/access_token",
-    "defaultScopes": ["read:user"],
+    "defaultScopes": [
+      "read:user"
+    ],
     "pkce": false,
     "clientAuth": "post",
-    "hint": "github.com/settings/developers → OAuth Apps → New. Callback URL must be exactly the redirect shown here.",
     "setups": [
-      { "id": "repo", "label": "Repositories", "description": "Full control of repos plus Actions workflows.", "scopes": ["repo", "workflow"] },
-      { "id": "gists", "label": "Gists", "description": "Create and edit gists.", "scopes": ["gist", "read:user"] },
-      { "id": "profile", "label": "Profile & orgs", "description": "Read profile and org membership.", "scopes": ["read:user", "read:org"] }
+      {
+        "id": "repo",
+        "label": "Repositories",
+        "description": "Full control of repos plus Actions workflows.",
+        "scopes": [
+          "repo",
+          "workflow"
+        ]
+      },
+      {
+        "id": "gists",
+        "label": "Gists",
+        "description": "Create and edit gists.",
+        "scopes": [
+          "gist",
+          "read:user"
+        ]
+      },
+      {
+        "id": "profile",
+        "label": "Profile & orgs",
+        "description": "Read profile and org membership.",
+        "scopes": [
+          "read:user",
+          "read:org"
+        ]
+      }
     ]
   },
   {
@@ -55,12 +190,20 @@
     "label": "GitLab",
     "authUrl": "https://gitlab.com/oauth/authorize",
     "tokenUrl": "https://gitlab.com/oauth/token",
-    "defaultScopes": ["read_user"],
+    "defaultScopes": [
+      "read_user"
+    ],
     "pkce": true,
     "clientAuth": "post",
-    "hint": "gitlab.com/-/user_settings/applications → Add new application. Redirect URI must be exactly the redirect shown here.",
     "setups": [
-      { "id": "api", "label": "API", "description": "Full read/write API access.", "scopes": ["api"] }
+      {
+        "id": "api",
+        "label": "API",
+        "description": "Full read/write API access.",
+        "scopes": [
+          "api"
+        ]
+      }
     ]
   },
   {
@@ -71,10 +214,16 @@
     "defaultScopes": [],
     "pkce": false,
     "clientAuth": "basic",
-    "authParams": { "owner": "user" },
-    "hint": "app.notion.com/developers/connections → New public connection. Access is granted on the connection, not via scopes — leave scopes empty.",
+    "authParams": {
+      "owner": "user"
+    },
     "setups": [
-      { "id": "default", "label": "Default", "description": "Access is configured on the Notion connection itself.", "scopes": [] }
+      {
+        "id": "default",
+        "label": "Default",
+        "description": "Access is configured on the Notion connection itself.",
+        "scopes": []
+      }
     ]
   },
   {
@@ -82,13 +231,22 @@
     "label": "Linear",
     "authUrl": "https://linear.app/oauth/authorize",
     "tokenUrl": "https://api.linear.app/oauth/token",
-    "defaultScopes": ["read"],
+    "defaultScopes": [
+      "read"
+    ],
     "pkce": true,
     "clientAuth": "post",
     "scopeSeparator": ",",
-    "hint": "linear.app/settings/api/applications/new. Callback URL must be exactly the redirect shown here.",
     "setups": [
-      { "id": "write", "label": "Read & write", "description": "Read and write issues, projects, etc.", "scopes": ["read", "write"] }
+      {
+        "id": "write",
+        "label": "Read & write",
+        "description": "Read and write issues, projects, etc.",
+        "scopes": [
+          "read",
+          "write"
+        ]
+      }
     ]
   },
   {
@@ -96,13 +254,25 @@
     "label": "Dropbox",
     "authUrl": "https://www.dropbox.com/oauth2/authorize",
     "tokenUrl": "https://api.dropboxapi.com/oauth2/token",
-    "defaultScopes": ["account_info.read"],
+    "defaultScopes": [
+      "account_info.read"
+    ],
     "pkce": true,
     "clientAuth": "post",
-    "authParams": { "token_access_type": "offline" },
-    "hint": "dropbox.com/developers/apps → Create app. Add the redirect shown here under OAuth 2 → Redirect URIs; tick the permissions you need.",
+    "authParams": {
+      "token_access_type": "offline"
+    },
     "setups": [
-      { "id": "files", "label": "Files", "description": "Read and write files.", "scopes": ["account_info.read", "files.content.read", "files.content.write"] }
+      {
+        "id": "files",
+        "label": "Files",
+        "description": "Read and write files.",
+        "scopes": [
+          "account_info.read",
+          "files.content.read",
+          "files.content.write"
+        ]
+      }
     ]
   },
   {
@@ -110,14 +280,36 @@
     "label": "Atlassian (Jira/Confluence)",
     "authUrl": "https://auth.atlassian.com/authorize",
     "tokenUrl": "https://auth.atlassian.com/oauth/token",
-    "defaultScopes": ["read:me", "offline_access"],
+    "defaultScopes": [
+      "read:me",
+      "offline_access"
+    ],
     "pkce": false,
     "clientAuth": "post",
-    "authParams": { "audience": "api.atlassian.com", "prompt": "consent" },
-    "hint": "developer.atlassian.com/console/myapps → Create → OAuth 2.0 integration. Callback URL must be exactly the redirect shown here.",
+    "authParams": {
+      "audience": "api.atlassian.com",
+      "prompt": "consent"
+    },
     "setups": [
-      { "id": "jira", "label": "Jira", "description": "Read and write Jira work.", "scopes": ["read:jira-work", "write:jira-work", "offline_access"] },
-      { "id": "confluence", "label": "Confluence", "description": "Read Confluence content.", "scopes": ["read:confluence-content.all", "offline_access"] }
+      {
+        "id": "jira",
+        "label": "Jira",
+        "description": "Read and write Jira work.",
+        "scopes": [
+          "read:jira-work",
+          "write:jira-work",
+          "offline_access"
+        ]
+      },
+      {
+        "id": "confluence",
+        "label": "Confluence",
+        "description": "Read Confluence content.",
+        "scopes": [
+          "read:confluence-content.all",
+          "offline_access"
+        ]
+      }
     ]
   },
   {
@@ -126,7 +318,6 @@
     "defaultScopes": [],
     "pkce": true,
     "clientAuth": "post",
-    "custom": true,
-    "hint": "Paste the provider's authorization and token endpoint URLs."
+    "custom": true
   }
 ]

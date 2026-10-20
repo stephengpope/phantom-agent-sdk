@@ -5,7 +5,7 @@
 // authorization URL, PKCE, state, code exchange, refresh, client
 // authentication — is openid-client's (panva; the Node OAuth client), never
 // ours. What is ours: the provider presets (presets.json — endpoints,
-// scopes, hints), the secret row's shape, and when to refresh.
+// scopes), the secret row's shape, and when to refresh.
 //
 // One row, two halves (storage/Settings.ts, the `secret` namespace): the
 // plain value carries the connection's facts (provider, client id, scopes,

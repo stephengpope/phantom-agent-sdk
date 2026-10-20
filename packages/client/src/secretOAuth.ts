@@ -20,8 +20,6 @@ export interface OAuthPreset {
   scopeSeparator?: string;
   /** The user supplies both endpoint URLs. */
   custom?: boolean;
-  /** Where to create the client — the one line the form shows under Provider. */
-  hint?: string;
   /** Curated scope bundles for the form's Setup row; a convenience, never stored. */
   setups?: Array<{ id: string; label: string; description?: string; scopes: string[] }>;
 }
