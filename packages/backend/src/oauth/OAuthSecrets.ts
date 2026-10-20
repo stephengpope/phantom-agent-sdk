@@ -235,9 +235,12 @@ export class OAuthSecrets {
     const authUrl = preset.custom ? oauth.authUrl : preset.authUrl;
     const tokenUrl = preset.custom ? oauth.tokenUrl : preset.tokenUrl;
     if (!authUrl || !tokenUrl) throw new OAuthSecretError('invalid_args', `the ${oauth.provider} connection is missing its endpoint URLs`);
+    if (preset.clientAuth !== 'none' && !vault.clientSecret) {
+      throw new OAuthSecretError('invalid_args', `${preset.label} needs the client secret — add it to the secret first`);
+    }
     const auth = preset.clientAuth === 'none' ? client.None()
-      : preset.clientAuth === 'basic' ? client.ClientSecretBasic(vault.clientSecret ?? '')
-      : client.ClientSecretPost(vault.clientSecret ?? '');
+      : preset.clientAuth === 'basic' ? client.ClientSecretBasic(vault.clientSecret)
+      : client.ClientSecretPost(vault.clientSecret);
     const config = new client.Configuration(
       { issuer: new URL(tokenUrl).origin, authorization_endpoint: authUrl, token_endpoint: tokenUrl },
       oauth.clientId, undefined, auth);
